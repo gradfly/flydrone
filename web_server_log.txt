@@ -1,0 +1,47 @@
+Serving directory: d:\OneDrive\project\飞控\果蝇神经网络模型\flydrone\docs
+Index.html exists: True
+Live folder contents: ['app.js', 'engine.js', 'minifly.json', 'models.js', 'room.js']
+
+Server STARTED on http://localhost:8080
+[18/Sep/2026 15:35:51] "GET / HTTP/1.1" 200 -
+[18/Sep/2026 15:35:52] "GET /live/app.js HTTP/1.1" 304 -
+[18/Sep/2026 15:35:52] "GET /vendor/three.module.min.js HTTP/1.1" 304 -
+[18/Sep/2026 15:35:52] "GET /vendor/jsm/controls/OrbitControls.js HTTP/1.1" 304 -
+[18/Sep/2026 15:35:52] "GET /vendor/jsm/postprocessing/EffectComposer.js HTTP/1.1" 304 -
+[18/Sep/2026 15:35:52] "GET /vendor/jsm/postprocessing/RenderPass.js HTTP/1.1" 304 -
+[18/Sep/2026 15:35:52] "GET /vendor/jsm/postprocessing/UnrealBloomPass.js HTTP/1.1" 304 -
+[18/Sep/2026 15:35:52] "GET /vendor/jsm/postprocessing/OutputPass.js HTTP/1.1" 304 -
+[18/Sep/2026 15:35:52] "GET /vendor/jsm/environments/RoomEnvironment.js HTTP/1.1" 304 -
+[18/Sep/2026 15:35:52] "GET /live/engine.js HTTP/1.1" 304 -
+[18/Sep/2026 15:35:52] "GET /live/models.js HTTP/1.1" 304 -
+[18/Sep/2026 15:35:52] "GET /live/room.js HTTP/1.1" 304 -
+[18/Sep/2026 15:35:52] "GET /vendor/jsm/shaders/CopyShader.js HTTP/1.1" 304 -
+[18/Sep/2026 15:35:52] "GET /vendor/jsm/postprocessing/ShaderPass.js HTTP/1.1" 304 -
+[18/Sep/2026 15:35:53] "GET /vendor/jsm/postprocessing/MaskPass.js HTTP/1.1" 304 -
+[18/Sep/2026 15:35:53] "GET /vendor/jsm/postprocessing/Pass.js HTTP/1.1" 304 -
+[18/Sep/2026 15:35:53] "GET /vendor/jsm/shaders/LuminosityHighPassShader.js HTTP/1.1" 304 -
+[18/Sep/2026 15:35:53] "GET /vendor/jsm/shaders/OutputShader.js HTTP/1.1" 304 -
+[18/Sep/2026 15:35:53] "GET /vendor/jsm/geometries/RoundedBoxGeometry.js HTTP/1.1" 304 -
+[18/Sep/2026 15:35:53] "GET /live/minifly.json HTTP/1.1" 304 -
+[18/Sep/2026 15:35:53] code 404, message File not found
+[18/Sep/2026 15:35:53] "GET /@vite/client HTTP/1.1" 404 -
+[19/Sep/2026 03:36:24] "GET /index.html HTTP/1.1" 200 -
+[19/Sep/2026 03:36:29] "GET /live/app.js HTTP/1.1" 200 -
+[19/Sep/2026 03:36:29] "GET /vendor/three.module.min.js HTTP/1.1" 200 -
+[19/Sep/2026 03:36:29] "GET /vendor/jsm/controls/OrbitControls.js HTTP/1.1" 200 -
+[19/Sep/2026 03:36:29] "GET /vendor/jsm/postprocessing/EffectComposer.js HTTP/1.1" 200 -
+[19/Sep/2026 03:36:29] "GET /vendor/jsm/postprocessing/RenderPass.js HTTP/1.1" 200 -
+[19/Sep/2026 03:36:29] "GET /vendor/jsm/postprocessing/UnrealBloomPass.js HTTP/1.1" 200 -
+[19/Sep/2026 03:36:29] "GET /vendor/jsm/postprocessing/OutputPass.js HTTP/1.1" 200 -
+[19/Sep/2026 03:36:29] "GET /vendor/jsm/environments/RoomEnvironment.js HTTP/1.1" 200 -
+[19/Sep/2026 03:36:29] "GET /live/engine.js HTTP/1.1" 200 -
+[19/Sep/2026 03:36:29] "GET /live/models.js HTTP/1.1" 200 -
+[19/Sep/2026 03:36:29] "GET /live/room.js HTTP/1.1" 200 -
+[19/Sep/2026 03:36:29] "GET /vendor/jsm/shaders/CopyShader.js HTTP/1.1" 200 -
+[19/Sep/2026 03:36:30] "GET /vendor/jsm/postprocessing/ShaderPass.js HTTP/1.1" 200 -
+[19/Sep/2026 03:36:30] "GET /vendor/jsm/postprocessing/MaskPass.js HTTP/1.1" 200 -
+[19/Sep/2026 03:36:30] "GET /vendor/jsm/postprocessing/Pass.js HTTP/1.1" 200 -
+[19/Sep/2026 03:36:30] "GET /vendor/jsm/shaders/LuminosityHighPassShader.js HTTP/1.1" 200 -
+[19/Sep/2026 03:36:30] "GET /vendor/jsm/shaders/OutputShader.js HTTP/1.1" 200 -
+[19/Sep/2026 03:36:30] "GET /vendor/jsm/geometries/RoundedBoxGeometry.js HTTP/1.1" 200 -
+[19/Sep/2026 03:36:30] "GET /live/minifly.json HTTP/1.1" 200 -
