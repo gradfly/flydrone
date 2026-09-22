@@ -100,7 +100,8 @@ decoder:
   escape:
     terms: [DNp01_L, DNp01_R]
     threshold_hz: 20
-    mode: climb            # climb | drop | brake
+    # On trigger the fly randomly picks one of: climb / left / right.
+    # The picked maneuver is held for duration_s.
     duration_s: 0.7
     strength: 0.8
 
@@ -109,7 +110,7 @@ decoder:
 # ---------------------------------------------------------------------------
 safety:
   max_throttle: 0.6
-  max_yaw: 0.6
+  max_yaw: 0.8
   max_forward: 0.4
   max_lateral: 0.4
   slew_per_s: 2.5          # max command change per second

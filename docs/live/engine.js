@@ -224,7 +224,7 @@ export class SimDrone {
     if (this.landing && this.pos[2] <= 0.02) { this.flying = false; this.pos[2] = 0; }
   }
   collide(p) {
-    const r = 0.12, room = this.room;
+    const r = 0.1, room = this.room;
     const hx = room.sx / 2 - r, hy = room.sy / 2 - r;
     let q = [clamp(p[0], -hx, hx), clamp(p[1], -hy, hy), clamp(p[2], 0, room.h - r)];
     let hit = Math.abs(q[0] - p[0]) > 1e-9 || Math.abs(q[1] - p[1]) > 1e-9 || (q[2] !== p[2] && p[2] > 0);
@@ -413,7 +413,7 @@ export class Decoder {
     this.esc = d.escape;
     this.baseline = null; this.sum = {}; this.nSettle = 0; this.elapsed = 0;
     this.state = { throttle: 0, yaw: 0, forward: 0, lateral: 0 };
-    this.escUntil = -1; this.gf = 0; this.brake = 0; this.escapes = 0;
+    this.escUntil = -1; this.gf = 0; this.brake = 0; this.escapes = 0; this.escPick = null;
   }
   update(rates, dt) {
     this.elapsed += dt;
@@ -441,12 +441,17 @@ export class Decoder {
     }
     const gfNow = Math.max(...this.esc.terms.map((k) => rates[k] || 0));
     this.gf = 0.6 * this.gf + 0.4 * gfNow;
-    if (this.gf >= this.esc.threshold_hz && this.elapsed > this.escUntil) { this.escUntil = this.elapsed + this.esc.duration_s; this.escapes++; }
-    if (this.elapsed <= this.escUntil) {
-      cmd.escape = true; cmd.forward = 0;
-      if (this.esc.mode === "climb") cmd.throttle = this.esc.strength;
-      else if (this.esc.mode === "drop") cmd.throttle = -this.esc.strength;
-      cmd.note = `giant fiber escape (${this.esc.mode})`;
+    if (this.gf >= this.esc.threshold_hz && this.elapsed > this.escUntil) {
+      this.escUntil = this.elapsed + this.esc.duration_s;
+      this.escapes++;
+      this.escPick = ["climb", "left", "right"][Math.floor(Math.random() * 3)];
+    }
+    if (this.elapsed <= this.escUntil && this.escPick) {
+      cmd.escape = true; cmd.forward = 0; cmd.throttle = 0; cmd.yaw = 0;
+      if (this.escPick === "climb") cmd.throttle = this.esc.strength;
+      else if (this.escPick === "left") cmd.yaw = -this.esc.strength;
+      else if (this.escPick === "right") cmd.yaw = this.esc.strength;
+      cmd.note = `giant fiber escape (${this.escPick})`;
     }
     return cmd;
   }

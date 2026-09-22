@@ -30,7 +30,11 @@ def test_escape_reflex():
     c = None
     for _ in range(4):
         c = dec.update({**rest, "DNp01_L": 80}, 0.05)
-    assert c.escape and c.throttle > 0
+    # Escape is now one of climb / left / right (randomly picked).
+    # Exactly one of throttle or yaw must be at +-strength.
+    assert c.escape
+    assert (c.throttle > 0) or (abs(c.yaw) > 0.3)
+    assert (c.throttle == 0) or (c.yaw == 0)  # not both axes at once
 
 
 def test_readout_file(tmp_path):

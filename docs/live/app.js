@@ -5,7 +5,7 @@ import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
-import { Pilot, DEMO_TIMELINE } from "./engine.js";
+import { Pilot } from "./engine.js?v=4";
 import { createDrone, createFly, createSwatter } from "./models.js";
 import { createRoom } from "./room.js";
 
@@ -59,7 +59,7 @@ const room = createRoom(scene);
 
 // drone + fly mascot
 const droneRoot = new THREE.Group(); scene.add(droneRoot);
-const drone = createDrone(); drone.group.scale.setScalar(1.6); droneRoot.add(drone.group);
+const drone = createDrone(); drone.group.scale.setScalar(1.0); droneRoot.add(drone.group);
 const fly = createFly(); drone.group.add(fly.group);
 droneRoot.traverse((o) => { if (o.isMesh) o.castShadow = true; });
 const swatter = createSwatter(); swatter.group.visible = false; scene.add(swatter.group);
@@ -368,7 +368,7 @@ function setGesture(name) {
   document.querySelectorAll("[data-g]").forEach((b) => b.classList.toggle("on", b.dataset.g === name));
 }
 document.querySelectorAll("[data-g]").forEach((b) => b.addEventListener("click", () => setGesture(b.dataset.g)));
-$("bAuto").onclick = () => { hideHint(); newPilot("gestures"); autoplay = true; setButtons("auto"); };
+$("bAuto").onclick = () => { hideHint(); newPilot("gestures"); pilot.decoder.cruise = 0.2; autoplay = true; setButtons("auto"); };
 $("bChair").onclick = () => { hideHint(); newPilot("chair"); autoplay = false; setButtons("chair"); };
 $("bReset").onclick = () => $("bAuto").onclick();
 window.addEventListener("keydown", (e) => {
@@ -607,10 +607,8 @@ setTimeout(hideHint, 12000);
 // ================================================================== simulation step + UI
 function simTick() {
   if (autoplay && scenario === "gestures" && pilot.phase === "flight") {
-    let gst = DEMO_TIMELINE[0][1];
-    for (const [ts, st] of DEMO_TIMELINE) if (pilot.t >= ts) gst = st;
-    pilot.gesture = gst;
-    if (pilot.t > 23.5) newPilot("gestures");
+    // No scripted hand: the drone cruises forward on its own camera and dodges what it sees.
+    pilot.gesture = { present: false, openness: 0, x: 0, y: 0, size: 0, label: "cruise forward" };
   } else if (webcam && pilot.phase === "flight" && scenario === "gestures") {
     pilot.gesture = readWebcam();
   }
@@ -654,7 +652,8 @@ function simTick() {
     if (scenario === "chair") { label = "CHAIR RUN"; sub = "cruise forward, the brain brakes and dodges"; chain = pilot.decoder.brake > 0.2 ? "looming -> DNp03 / DNp01 -> brake + saccade" : "optic flow -> T4/T5 -> HS/VS -> DNg02 -> steady flight"; }
     if (scenario === "game") { label = game.round ? "SWATTER INCOMING" : "SWAT THE DRONE"; sub = game.round ? `${game.speed.toFixed(1)} m/s` : "press S or click the room"; chain = game.round ? "expansion -> LPLC2 + LC4 -> giant fiber DNp01 -> jump" : il.channel; }
     if (pokeUntil > 0) { label = `ZAP ${pokeLabel}`; sub = "you are stimulating these neurons"; }
-    if (last.cmd.escape) chain = "LPLC2 + LC4 -> giant fiber DNp01 -> escape";
+    if (autoplay && scenario === "gestures") { label = "AUTO CRUISE"; sub = "cruise forward, dodge obstacles"; chain = last.cmd.escape ? "looming -> DNp01 -> random escape (climb/left/right)" : "optic flow -> T4/T5 -> DNg02 -> steady cruise"; }
+    else if (last.cmd.escape) chain = "LPLC2 + LC4 -> giant fiber DNp01 -> escape";
     $("gname").innerHTML = `${label}<small>${sub}</small>`;
     $("chain").textContent = chain;
   }
@@ -741,7 +740,7 @@ function updateScene(alpha, dtReal) {
 newPilot(qs.get("scene") === "game" ? "game" : qs.get("scene") === "chair" ? "chair" : "gestures");
 if (scenario === "game") { autoplay = false; game.auto = qs.has("autoswat"); setButtons("swat"); }
 else if (scenario === "chair") { autoplay = false; setButtons("chair"); }
-else setButtons(autoplay ? "auto" : "");
+else { if (autoplay) pilot.decoder.cruise = 0.2; setButtons(autoplay ? "auto" : ""); }
 resize();
 if (RECORD) {
   document.body.classList.add("rec"); hideHint();

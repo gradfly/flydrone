@@ -13,9 +13,14 @@ changed.
 from __future__ import annotations
 
 import json
+import random
 from pathlib import Path
 
 from .command import AXES, FlightCommand
+
+# Giant-fiber escape reflex: when DNp01 fires, the fly picks one of three
+# evasive maneuvers at random. Each lasts escape_duration_s.
+ESCAPE_CHOICES = ("climb", "left", "right")
 
 
 class MotorDecoder:
@@ -30,7 +35,6 @@ class MotorDecoder:
         esc = d.get("escape", {}) or {}
         self.escape_terms = list(esc.get("terms", []))
         self.escape_threshold = float(esc.get("threshold_hz", 25))
-        self.escape_mode = esc.get("mode", "climb")
         self.escape_duration = float(esc.get("duration_s", 0.7))
         self.escape_strength = float(esc.get("strength", 0.8))
         self.baseline: dict[str, float] = {}
@@ -41,6 +45,7 @@ class MotorDecoder:
         self._escape_until = -1.0
         self._gf = 0.0  # smoothed giant-fiber rate
         self._brake = 0.0
+        self._escape_pick: str | None = None  # which of ESCAPE_CHOICES was picked for this escape
         if d.get("readout_file"):
             self.load_readout(d["readout_file"])
         self.last_escape_t = None
@@ -82,19 +87,23 @@ class MotorDecoder:
         out = {k: (0.0 if abs(v) < self.deadzone else v) for k, v in self._state.items()}
         cmd = FlightCommand(**out)
 
-        # giant-fiber escape reflex
+        # giant-fiber escape reflex: on trigger, randomly pick climb / left / right.
+        # The same picked maneuver is held for the whole escape_duration_s window.
         if self.escape_terms:
             gf_now = max(rates.get(g, 0.0) for g in self.escape_terms)
             self._gf = 0.6 * self._gf + 0.4 * gf_now  # ~100 ms memory: one stray spike is not an escape
             if self._gf >= self.escape_threshold and self._elapsed > self._escape_until:
                 self._escape_until = self._elapsed + self.escape_duration
                 self.last_escape_t = self._elapsed
-        if self._elapsed <= self._escape_until:
+                self._escape_pick = random.choice(ESCAPE_CHOICES)
+        if self._elapsed <= self._escape_until and self._escape_pick:
             cmd.escape = True
             cmd.forward = 0.0
-            if self.escape_mode == "climb":
+            if self._escape_pick == "climb":
                 cmd.throttle = self.escape_strength
-            elif self.escape_mode == "drop":
-                cmd.throttle = -self.escape_strength
-            cmd.note = f"giant fiber escape ({self.escape_mode})"
+            elif self._escape_pick == "left":
+                cmd.yaw = -self.escape_strength
+            elif self._escape_pick == "right":
+                cmd.yaw = self.escape_strength
+            cmd.note = f"giant fiber escape ({self._escape_pick})"
         return cmd
