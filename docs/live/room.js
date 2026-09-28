@@ -93,9 +93,9 @@ export function createRoom(scene, boxes = []) {
   const obstacles = new THREE.Group(); root.add(obstacles);
   const obstacleList = [];
   for (const box of boxes) {
-    const { group, neon } = createObstacleMesh(box);
+    const { group, neon, neonMat, halo } = createObstacleMesh(box);
     obstacles.add(group); neonLines.push(neon);
-    obstacleList.push({ name: box.name, box, neon, cx: (box.lo[0] + box.hi[0]) / 2, cy: (box.lo[1] + box.hi[1]) / 2 });
+    obstacleList.push({ name: box.name, box, neon, neonMat, halo, cx: (box.lo[0] + box.hi[0]) / 2, cy: (box.lo[1] + box.hi[1]) / 2 });
   }
 
   // ------------------------------------------------------------ lights
@@ -130,6 +130,7 @@ export function createRoom(scene, boxes = []) {
       const night = t === "night";
       for (const [m, day, nightMat] of themed) m.material = night ? nightMat : day;
       for (const l of neonLines) l.visible = night;
+      for (const o of obstacleList) { o.halo.visible = false; o.halo.material.blending = night ? THREE.AdditiveBlending : THREE.NormalBlending; }
       hemi.intensity = night ? 0.25 : 1.0; hemi.color.set(night ? 0x8fb8ff : 0xffffff);
       hemi.groundColor.set(night ? 0x1a2030 : 0x9aa0a8);
       sun.intensity = night ? 0.15 : 2.2; sun.color.set(night ? 0x8fa8ff : 0xfff1d6);
@@ -152,19 +153,41 @@ export function createRoom(scene, boxes = []) {
       }
       dustGeo.attributes.position.needsUpdate = true;
     },
-    // outline the obstacle closest to the drone (sim coords [x, y, z]) when something looms
-    highlightNearest(simPos, level) {
+    // Light up whichever obstacle is about to be hit. Two independent drives feed the alarm:
+    // the looming reflex (level, 0..1) lights the nearest block, and raw proximity lights any block
+    // whose collision skin is within 0.35 m — the drone can be shoved between two blocks and the
+    // brain's estimate alone would miss one of them. Actually touching paints it red.
+    highlightNearest(simPos, level = 0, touching = false) {
+      const pulse = 0.8 + 0.2 * Math.sin(performance.now() / 110); // slow breathing glow
       let best = null, bd = Infinity;
       for (const o of obstacleList) {
         const d = (o.cx - simPos[0]) ** 2 + (o.cy - simPos[1]) ** 2;
         if (d < bd) { bd = d; best = o; }
       }
       for (const o of obstacleList) {
-        const on = o === best && level > 0.12;
+        const b = o.box;
+        const dx = Math.max(b.lo[0] - simPos[0], 0, simPos[0] - b.hi[0]);
+        const dy = Math.max(b.lo[1] - simPos[1], 0, simPos[1] - b.hi[1]);
+        const dz = Math.max(b.lo[2] - simPos[2], 0, simPos[2] - b.hi[2]);
+        const gap = Math.hypot(dx, dy, dz) - 0.1;                 // clearance to the collision skin
+        const prox = Math.min(1, Math.max(0, 1 - gap / 0.25));    // 1 = touching, 0 = 0.25 m clear
+        const heat = Math.max(prox, o === best ? level : 0);
+        const on = heat > 0.04;
+        const hit = touching && gap < 0.06;
         if (theme === "day") o.neon.visible = on;
-        o.neon.material.color.set(level > 0.4 ? 0xffb020 : 0x4cc9f0);
+        // at night every block wears a neon frame, so the alarmed one only stands out if the
+        // others are dimmed — hence the low base opacity there
+        const color = hit ? 0xff3b30 : heat > 0.5 ? 0xffb020 : 0x4cc9f0;
+        o.neonMat.color.set(color);
+        o.neonMat.opacity = Math.min(1, (theme === "night" ? 0.2 : 0.9) + 0.8 * heat);
+        o.halo.material.color.set(color);
+        o.halo.visible = on;
+        o.halo.material.opacity = on ? (theme === "night" ? 0.18 : 0.34) * (0.35 + 0.65 * heat) * pulse : 0;
+        o.halo.scale.setScalar(1 + 0.09 * heat * pulse);
       }
     },
+    // debug helper for the headless checks: which obstacles are currently lit
+    lit() { return obstacleList.filter((o) => o.halo.visible).map((o) => o.name); },
   };
   api.setTheme("day");
   return api;

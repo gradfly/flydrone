@@ -919,9 +919,9 @@
       "width": 96,
       "height": 72,
       "grid": [6, 8],
-      "flow_gain": 1.2,
-      "loom_gain": 12.0,
-      "loom_floor": 0.04,
+      "flow_gain": 0.8,
+      "loom_gain": 10.0,
+      "loom_floor": 0.1,
       "blur": 1
     },
     "decoder": {
@@ -936,7 +936,7 @@
           "terms": { "DNg02_L": 0.5, "DNg02_R": 0.5 }
         },
         "yaw": {
-          "gain": 0.05,
+          "gain": 0.2,
           "terms": {
             "DNg02_R": 1.0,
             "DNg02_L": -1.0,
@@ -964,14 +964,14 @@
     },
     "safety": {
       "max_throttle": 0.6,
-      "max_yaw": 3.0,
-      "max_forward": 0.4,
-      "max_lateral": 0.4,
+      "max_yaw": 4.0,
+      "max_forward": 0.8,
+      "max_lateral": 0.8,
       "slew_per_s": 2.5,
       "min_alt_m": 0.3,
       "max_alt_m": 2.2,
       "geofence_radius_m": 3.0,
-      "brain_timeout_s": 0.5,
+      "brain_timeout_s": 0.4,
       "min_battery_pct": 20,
       "max_flight_s": 180
     },

@@ -5,9 +5,15 @@ import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
-import { Pilot, ROOM } from "./engine.js?v=4";
-import { createDrone, createFly, createSwatter } from "./models.js";
-import { createRoom } from "./room.js";
+import { Pilot, ROOM } from "./engine.js?v=9";
+import { createDrone, createFly, createSwatter } from "./models.js?v=9";
+import { createRoom } from "./room.js?v=9";
+
+// Build stamp — bump alongside the ?v= query in docs/index.html whenever these modules
+// change, so a browser serving a stale cached copy is immediately obvious: the console
+// prints the build, and the AUTO CRUISE panel prints the live altitude.
+const BUILD = "v9";
+console.log(`flydrones live build ${BUILD}`);
 
 const qs = new URLSearchParams(location.search);
 const RECORD = qs.has("record");
@@ -65,12 +71,35 @@ droneRoot.traverse((o) => { if (o.isMesh) o.castShadow = true; });
 const swatter = createSwatter(); swatter.group.visible = false; scene.add(swatter.group);
 
 // trail
-const TRAIL_N = 220;
+// NOTE: this used to be a THREE.Line, but WebGL ignores LineBasicMaterial.linewidth — a line is
+// always a 1 px hairline no matter what you ask for. So the trail is built as real geometry: one
+// screen-facing quad per segment, whose width is re-derived from the camera every frame so the
+// line keeps a constant thickness *in screen pixels* (TRAIL_PX) at any zoom level.
+const TRAIL_N = 220;       // samples kept (trail length)
+const TRAIL_PX = Number(qs.get("trailpx")) || 3; // screen-pixel thickness (was a 1 px line + 2 px) (tune me; ?trailpx=5 to try)
+const TRAIL_ALPHA = 0.95;  // opacity at the head; fades to fully transparent down the tail
+const TRAIL_FADE = 0.65;   // fade curve: lower = the tail stays darker for longer (tune me)
 const trailGeo = new THREE.BufferGeometry();
-trailGeo.setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(TRAIL_N * 3), 3));
-trailGeo.setAttribute("color", new THREE.Float32BufferAttribute(new Float32Array(TRAIL_N * 3), 3));
-const trailLine = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.8 }));
-scene.add(trailLine);
+const trailVert = new Float32Array((TRAIL_N - 1) * 6 * 3);   // 2 triangles per segment
+const trailFade = new Float32Array((TRAIL_N - 1) * 6 * 4);   // rgba: the fade lives in the alpha
+trailGeo.setAttribute("position", new THREE.BufferAttribute(trailVert, 3));
+trailGeo.setAttribute("color", new THREE.BufferAttribute(trailFade, 4));
+const trailMesh = new THREE.Mesh(trailGeo, new THREE.MeshBasicMaterial({
+  color: 0x000000,           // black trail
+  vertexColors: true,        // rgb stays black, alpha carries the fade
+  transparent: true,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+}));
+trailMesh.frustumCulled = false; // the buffer is rewritten every frame; skip the stale bounds test
+scene.add(trailMesh);
+// scratch vectors / buffers for the trail rebuild (allocated once, not per frame)
+const TRAIL_TMP = { p: new THREE.Vector3(), d: new THREE.Vector3(), view: new THREE.Vector3(), side: new THREE.Vector3() };
+const trailPos = new Float32Array(TRAIL_N * 3), trailSide = new Float32Array(TRAIL_N * 3);
+function trailSample(i, out) {
+  const s = trail[Math.max(0, trail.length - TRAIL_N + i)] || curPos;
+  return out.set(s[0], s[2] + 0.12, -s[1]); // sim (z up) -> three (y up), slightly above the drone
+}
 // escape shockwave
 const wave = new THREE.Mesh(new THREE.RingGeometry(0.2, 0.26, 64), new THREE.MeshBasicMaterial({ color: 0xffb020, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }));
 wave.rotation.x = -Math.PI / 2; scene.add(wave);
@@ -115,7 +144,7 @@ function applyTheme() {
   scene.environmentIntensity = theme === "night" ? 0.12 : 0.45;
   if (theme === "night") { bloom.threshold = 0.42; bloom.strength = 0.75; }
   drone.setGlow(theme === "night" ? 1 : 0.35);
-  trailLine.material.opacity = theme === "night" ? 0.95 : 0.55;
+  // the trail is a fixed black ribbon now — its fade is per-vertex alpha, not a theme tint
   document.body.classList.toggle("day", theme === "day");
   $("bTheme").firstChild.textContent = theme === "night" ? "DAY" : "NIGHT";
 }
@@ -368,7 +397,7 @@ function setGesture(name) {
   document.querySelectorAll("[data-g]").forEach((b) => b.classList.toggle("on", b.dataset.g === name));
 }
 document.querySelectorAll("[data-g]").forEach((b) => b.addEventListener("click", () => setGesture(b.dataset.g)));
-$("bAuto").onclick = () => { hideHint(); newPilot("gestures"); pilot.decoder.cruise = 0.2; autoplay = true; setButtons("auto"); };
+$("bAuto").onclick = () => { hideHint(); newPilot("gestures"); applyAutoTune(pilot); autoplay = true; setButtons("auto"); };
 $("bChair").onclick = () => { hideHint(); newPilot("chair"); autoplay = false; setButtons("chair"); };
 $("bReset").onclick = () => $("bAuto").onclick();
 window.addEventListener("keydown", (e) => {
@@ -602,11 +631,70 @@ let hintHidden = false;
 function hideHint() { if (!hintHidden) { hintHidden = true; $("hint").style.opacity = 0; } }
 setTimeout(hideHint, 12000);
 
+// ================================================================== autoplay tuning
+// Autoplay flies faster, sees looming sooner and turns harder than the stock model.
+// These knobs are applied to the autoplay Pilot ONLY — the chair run and the swat game
+// keep the engine defaults (engine.js) and the shipped net config (minifly.json).
+const AUTO_TUNE = {
+  cruise: 1.2,     // forward command    (was 0.2)   -> cruise ~0.55 m/s instead of ~0.2
+  maxForward: 1.5, // safety.max_forward (was 0.4)   -> leaves room for the higher cruise
+  loomGain: 10,     // vision.loom_gain   (was 12)    -> looming reads stronger
+  loomFloor: 0.1,  // vision.loom_floor  (was 0.04)  -> smaller expansions count as looming
+  yawRateDps: 180,  // SimDrone.yrMax     (was 120)   -> sharper turns, tighter dodges
+  yawGain: 0.08,   // decoder yaw gain   (was 0.05)  -> the turn drive bites harder
+  // Escape direction mix (looming AND bump escapes): a climb is rare, turns are the norm.
+  // A run of "climb" escapes used to ratchet the drone up into the safety ceiling.
+  escPickP: { climb: 0.10, left: 0.45 }, // right gets the remaining 45 %
+  // Residual altitude governor (engine.js → Pilot.altitudeTrim). The hand illusion alone is not
+  // enough: the stronger the forward optic flow (cruise 1.2 here), the more the brain drifts upward,
+  // so the drone crept up to the ceiling. This trims the leftover error back to target_m.
+  // ceil_m must match ALT_CEIL below: an escape may not climb above it.
+  altHold: { target_m: 1.0, dead_m: 0.05, kp: 2.2, max: 0.5, ceil_m: 1.05 },
+};
+function applyAutoTune(p) {
+  p.decoder.cruise = AUTO_TUNE.cruise;
+  p.decoder.escP = { ...AUTO_TUNE.escPickP };
+  const { ceil_m, ...hold } = AUTO_TUNE.altHold;
+  p.altHold = hold;                     // Pilot.altitudeTrim uses { target_m, dead_m, kp, max }
+  p.decoder.escCeilAlt = ceil_m;        // escapes may not climb above the ceiling
+  p.safety.max.forward = AUTO_TUNE.maxForward;
+  p.retina.loomGain = AUTO_TUNE.loomGain;
+  p.retina.loomFloor = AUTO_TUNE.loomFloor;
+  p.drone.yrMax = (AUTO_TUNE.yawRateDps * Math.PI) / 180;
+  // decoder.axes is a live reference into the shared net config, so copy before overriding
+  // (otherwise the new yaw gain would leak into the chair run / swat game pilots).
+  p.decoder.axes = { ...p.decoder.axes, yaw: { ...p.decoder.axes.yaw, gain: AUTO_TUNE.yawGain } };
+  console.log("autoplay tune", AUTO_TUNE);
+}
+
+// ================================================================== autoplay altitude hold
+// The simulated hand doubles as an altitude lever — the same trick gameTick() uses:
+// dropping the hand injects downward optic flow (a "rising illusion"), so the brain descends;
+// a still hand leaves the scene quiet and the brain holds whatever height it cruised to.
+// The hand's size stays 0 on purpose: a hand that reappears after a drop would otherwise read
+// as "hand rushing in" (looming) and fire a spurious giant-fiber escape, breaking the cruise.
+const ALT_HOLD = { present: true, openness: 0.1, x: 0, y: 0, size: 0, label: "altitude hold" };
+const ALT_CLIMB = { present: true, openness: 0.95, x: 0, y: 0, size: 0, label: "climb" };
+const ALT_CEIL = 1.05;   // above this the hand drops  -> descend      (tune me)
+const ALT_FLOOR = 0.80;  // below this the palm opens -> climb back up (tune me)
+let contactUntil = -1;   // while the drone is bumping a surface the hand stays still (see simTick)
+function autoHeightGesture(alt) {
+  if (alt > ALT_CEIL) return DROP;                              // too high -> drop the hand, descend
+  if (ALT_FLOOR !== null && alt < ALT_FLOOR) return ALT_CLIMB;  // too low  -> open palm, climb back
+  return ALT_HOLD;                                              // in band  -> still hand, hold
+}
+
 // ================================================================== simulation step + UI
 function simTick() {
   if (autoplay && scenario === "gestures" && pilot.phase === "flight") {
-    // No scripted hand: the drone cruises forward on its own camera and dodges what it sees.
-    pilot.gesture = { present: false, openness: 0, x: 0, y: 0, size: 0, label: "cruise forward" };
+    // No scripted hand: the drone cruises forward on its own camera and dodges what it sees,
+    // while the simulated hand trims the altitude back to ~1 m. On a bump the hand is held still:
+    // a contact escape may pick "climb", and the altitude governor's descend illusion would
+    // otherwise cancel it and leave the drone pressed against the surface. The hold is NOT applied
+    // while the drone is above the ceiling — muting the governor there is what let it stall high up.
+    const tooHigh = pilot.drone.pos[2] > ALT_CEIL;
+    if (pilot.drone.touching && !tooHigh) contactUntil = pilot.t + 0.7;
+    pilot.gesture = pilot.t < contactUntil ? ALT_HOLD : autoHeightGesture(pilot.drone.pos[2]);
   } else if (webcam && pilot.phase === "flight" && scenario === "gestures") {
     pilot.gesture = readWebcam();
   }
@@ -650,7 +738,15 @@ function simTick() {
     if (scenario === "chair") { label = "CHAIR RUN"; sub = "cruise forward, the brain brakes and dodges"; chain = pilot.decoder.brake > 0.2 ? "looming -> DNp03 / DNp01 -> brake + saccade" : "optic flow -> T4/T5 -> HS/VS -> DNg02 -> steady flight"; }
     if (scenario === "game") { label = game.round ? "SWATTER INCOMING" : "SWAT THE DRONE"; sub = game.round ? `${game.speed.toFixed(1)} m/s` : "press S or click the room"; chain = game.round ? "expansion -> LPLC2 + LC4 -> giant fiber DNp01 -> jump" : il.channel; }
     if (pokeUntil > 0) { label = `ZAP ${pokeLabel}`; sub = "you are stimulating these neurons"; }
-    if (autoplay && scenario === "gestures") { label = "AUTO CRUISE"; sub = "cruise forward, dodge obstacles"; chain = last.cmd.escape ? "looming -> DNp01 -> random escape (climb/left/right)" : "optic flow -> T4/T5 -> DNg02 -> steady cruise"; }
+    if (autoplay && scenario === "gestures") {
+      label = "AUTO CRUISE"; sub = `cruise forward, dodge obstacles · hold ~1 m (${pilot.drone.pos[2].toFixed(2)} m)`;
+      chain = last.cmd.escape
+        ? (pilot.decoder.escCause === "contact"
+          ? "bump sensor -> giant fiber DNp01 -> escape off the surface"
+          : "looming -> DNp01 -> escape (10% climb / 45% left / 45% right)")
+        : pilot.gesture !== ALT_HOLD ? il.channel // altitude trim: the simulated hand is steering the brain
+        : "optic flow -> T4/T5 -> DNg02 -> steady cruise";
+    }
     else if (last.cmd.escape) chain = "LPLC2 + LC4 -> giant fiber DNp01 -> escape";
     $("gname").innerHTML = `${label}<small>${sub}</small>`;
     $("chain").textContent = chain;
@@ -694,16 +790,51 @@ function updateScene(alpha, dtReal) {
     swatter.group.rotation.set(0, Math.atan2(r.f[1], r.f[0]), 0);
     swatter.group.rotateZ(Math.sin(Math.min(1, r.t / (r.D / game.speed)) * Math.PI * 0.5) * 0.5 - 0.25);
   }
-  // trail
-  const pos = trailGeo.attributes.position.array, col = trailGeo.attributes.color.array;
-  const tc = theme === "night" ? [0.22, 1.0, 0.53] : [0.25, 0.45, 0.95];
-  for (let i = 0; i < TRAIL_N; i++) {
-    const q = trail[Math.max(0, trail.length - TRAIL_N + i)] || curPos, f = trail.length ? i / TRAIL_N : 0;
-    pos[i * 3] = q[0]; pos[i * 3 + 1] = q[2] + 0.12; pos[i * 3 + 2] = -q[1];
-    col[i * 3] = tc[0] * f; col[i * 3 + 1] = tc[1] * f; col[i * 3 + 2] = tc[2] * f;
+  // trail — one screen-facing quad per segment; the width is re-derived from the camera every
+  // frame, so the ribbon is exactly TRAIL_PX screen pixels thick at any distance/zoom
+  const n = Math.min(trail.length, TRAIL_N);
+  const cssH = canvas.clientHeight || 900;
+  const pxScale = (2 * Math.tan((camera.fov * Math.PI) / 360)) / cssH; // metres per pixel, per metre of distance
+  let verts = 0;
+  if (n >= 2) {
+    const { p: pt, d: tdir, view: tview, side: tside } = TRAIL_TMP;
+    for (let i = 0; i < n; i++) {
+      trailSample(i, pt);
+      trailPos[i * 3] = pt.x; trailPos[i * 3 + 1] = pt.y; trailPos[i * 3 + 2] = pt.z;
+      const a = Math.max(0, i - 1) * 3, b = Math.min(n - 1, i + 1) * 3;
+      tdir.set(trailPos[b] - trailPos[a], trailPos[b + 1] - trailPos[a + 1], trailPos[b + 2] - trailPos[a + 2]);
+      if (tdir.lengthSq() < 1e-12) tdir.set(0, 0, 1); else tdir.normalize();
+      tview.subVectors(camera.position, pt);
+      const dist = Math.max(0.05, tview.length());
+      tview.divideScalar(dist);
+      tside.crossVectors(tdir, tview); // perpendicular to both the path and the sight line -> faces the camera
+      if (tside.lengthSq() < 1e-10) tside.set(0, 1, 0);
+      tside.normalize().multiplyScalar(0.5 * TRAIL_PX * pxScale * dist); // half-width, in metres
+      trailSide[i * 3] = tside.x; trailSide[i * 3 + 1] = tside.y; trailSide[i * 3 + 2] = tside.z;
+    }
+    for (let i = 0; i + 1 < n; i++) {
+      const a = i * 3, b = a + 3;
+      const dx = trailPos[b] - trailPos[a], dy = trailPos[b + 1] - trailPos[a + 1], dz = trailPos[b + 2] - trailPos[a + 2];
+      if (dx * dx + dy * dy + dz * dz < 1e-10) continue; // stacked samples (drone parked on the floor)
+      const ax = trailPos[a], ay = trailPos[a + 1], az = trailPos[a + 2];
+      const bx = trailPos[b], by = trailPos[b + 1], bz = trailPos[b + 2];
+      const oax = trailSide[a], oay = trailSide[a + 1], oaz = trailSide[a + 2];
+      const obx = trailSide[b], oby = trailSide[b + 1], obz = trailSide[b + 2];
+      const fa = TRAIL_ALPHA * Math.pow(i / (n - 1), TRAIL_FADE);       // 0 at the tail -> 1 at the drone
+      const fb = TRAIL_ALPHA * Math.pow((i + 1) / (n - 1), TRAIL_FADE);
+      const vx = [ax + oax, ax - oax, bx - obx, ax + oax, bx - obx, bx + obx]; // (A+, A-, B-) + (A+, B-, B+)
+      const vy = [ay + oay, ay - oay, by - oby, ay + oay, by - oby, by + oby];
+      const vz = [az + oaz, az - oaz, bz - obz, az + oaz, bz - obz, bz + obz];
+      const va = [fa, fa, fb, fa, fb, fb];
+      for (let k = 0; k < 6; k++) {
+        trailVert[verts * 3] = vx[k]; trailVert[verts * 3 + 1] = vy[k]; trailVert[verts * 3 + 2] = vz[k];
+        trailFade[verts * 4] = 1; trailFade[verts * 4 + 1] = 1; trailFade[verts * 4 + 2] = 1; trailFade[verts * 4 + 3] = va[k];
+        verts++;
+      }
+    }
   }
+  trailGeo.setDrawRange(0, verts);
   trailGeo.attributes.position.needsUpdate = true; trailGeo.attributes.color.needsUpdate = true;
-  trailGeo.setDrawRange(Math.max(0, TRAIL_N - trail.length), TRAIL_N);
   // shockwave + prop wash
   waveT += dtReal;
   wave.position.set(p[0], Math.max(0.01, p[2] + 0.1), -p[1]);
@@ -713,7 +844,7 @@ function updateScene(alpha, dtReal) {
   }
   stepParticles(dtReal);
   const loom = pilot.last ? pilot.last.vision.loomLevel : 0;
-  room.highlightNearest(p, loom);
+  room.highlightNearest(p, loom, pilot.drone.touching);
   room.update(camera, dtReal);
   updatePopups(dtReal);
   sfx.update(pilot.drone.flying, c.throttle);
@@ -738,7 +869,7 @@ function updateScene(alpha, dtReal) {
 newPilot(qs.get("scene") === "game" ? "game" : qs.get("scene") === "chair" ? "chair" : "gestures");
 if (scenario === "game") { autoplay = false; game.auto = qs.has("autoswat"); setButtons("swat"); }
 else if (scenario === "chair") { autoplay = false; setButtons("chair"); }
-else { if (autoplay) pilot.decoder.cruise = 0.2; setButtons(autoplay ? "auto" : ""); }
+else { if (autoplay) applyAutoTune(pilot); setButtons(autoplay ? "auto" : ""); }
 resize();
 if (RECORD) {
   document.body.classList.add("rec"); hideHint();
@@ -760,6 +891,13 @@ if (RECORD) {
     setSpeed(v) { game.speed = v; },
     setView(v) { view = v; },
     theme(t) { theme = t; applyTheme(); },
+    // headless-check hook: lets an automated run read the sim without a screen (see .workbuddy probes)
+    state: () => ({
+      build: BUILD, simT, alt: pilot.drone.pos[2], pos: [...pilot.drone.pos], yawDeg: (pilot.drone.yaw * 180) / Math.PI,
+      touching: pilot.drone.touching, collisions: pilot.drone.collisions, escapes: pilot.decoder.escapes,
+      escCause: pilot.decoder.escCause, loom: pilot.last ? pilot.last.vision.loomLevel : 0,
+      escape: !!(pilot.last && pilot.last.cmd.escape), boxes: pilot.drone.room.boxes.length, lit: room.lit(),
+    }),
     ready: true,
   };
 } else {

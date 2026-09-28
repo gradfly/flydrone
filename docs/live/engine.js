@@ -123,7 +123,8 @@ export function makeObstacles(seed = (Math.random() * 0xffffffff) >>> 0) {
 
 export const ROOM = {
   sx: 6, sy: 6, h: 2.7,
-  boxes: makeObstacles(),
+  // ?seed=<n> pins the obstacle layout, so a run is reproducible (headless checks, bug reports)
+  boxes: makeObstacles(typeof location !== "undefined" ? Number(new URLSearchParams(location.search).get("seed")) || undefined : undefined),
 };
 
 export class RayCamera {
@@ -195,6 +196,7 @@ export class SimDrone {
     this.pos = [...start]; this.vel = [0, 0, 0];
     this.yaw = (yawDeg * Math.PI) / 180; this.yawRate = 0;
     this.vMax = 1.0; this.vzMax = 0.8; this.yrMax = (120 * Math.PI) / 180; this.tau = 0.35; this.wind = 0.03;
+    this.bounce = 0.45; // restitution on a wall / obstacle bump (0 = pure slide, 1 = full rebound)
     this.rng = mulberry32(seed + 99);
     this.cam = new RayCamera();
     this.cmd = { throttle: 0, yaw: 0, forward: 0, lateral: 0 };
@@ -202,7 +204,7 @@ export class SimDrone {
     this.takeoffTarget = null; this.landing = false; this.battery = 100;
   }
   gauss() { const u = 1 - this.rng(), v = this.rng(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); }
-  takeoff() { this.flying = true; this.takeoffTarget = 0.9; this.landing = false; }
+  takeoff() { this.flying = true; this.takeoffTarget = 0.5; this.landing = false; }
   // browser game only: a giant-fiber "takeoff jump" = short velocity burst up and back
   jump(up = 1.6, back = 0.8) {
     if (!this.flying || this.takeoffTarget !== null) return;
@@ -212,7 +214,7 @@ export class SimDrone {
   send(cmd) { this.cmd = cmd; }
   telemetry() {
     return { t: this.t, alt: this.pos[2], x: this.pos[0], y: this.pos[1], yawDeg: ((this.yaw * 180) / Math.PI % 360 + 360) % 360,
-      yawRateDps: (-this.yawRate * 180) / Math.PI, battery: this.battery, flying: this.flying };
+      yawRateDps: (-this.yawRate * 180) / Math.PI, battery: this.battery, flying: this.flying, touching: this.touching };
   }
   frame() { return this.cam.render(this.room, this.pos, this.yaw); }
   step(dt) {
@@ -236,24 +238,57 @@ export class SimDrone {
     this.yawRate += (yrT - this.yawRate) * k;
     this.yaw += this.yawRate * dt;
     const nw = this.pos.map((p, i) => p + this.vel[i] * dt);
-    const [q, hit] = this.collide(nw);
-    if (hit) { if (!this.touching) this.collisions++; this.vel = this.vel.map((x) => x * -0.2); }
+    const [q, hit, n] = this.collide(nw);
+    if (hit) {
+      if (!this.touching) this.collisions++;
+      // Cancel only the velocity component that points INTO the surface and keep the tangential
+      // part, so the drone slides along a wall / obstacle instead of gluing itself to it. (The old
+      // code snapped the whole position back and reversed the whole velocity, which left the drone
+      // pinned against a surface for up to 20 s at a time.)
+      const vn = this.vel[0] * n[0] + this.vel[1] * n[1] + this.vel[2] * n[2];
+      if (vn < 0) for (let i = 0; i < 3; i++) this.vel[i] -= vn * n[i] * (1 + this.bounce);
+    }
     this.touching = hit;
     this.pos = q;
     if (this.landing && this.pos[2] <= 0.02) { this.flying = false; this.pos[2] = 0; }
   }
   collide(p) {
     const r = 0.1, room = this.room;
-    const hx = room.sx / 2 - r, hy = room.sy / 2 - r;
-    let q = [clamp(p[0], -hx, hx), clamp(p[1], -hy, hy), clamp(p[2], 0, room.h - r)];
-    let hit = Math.abs(q[0] - p[0]) > 1e-9 || Math.abs(q[1] - p[1]) > 1e-9 || (q[2] !== p[2] && p[2] > 0);
-    for (const b of room.boxes) {
-      if (b.solid === false) continue;
-      if (q[0] > b.lo[0] - r && q[0] < b.hi[0] + r && q[1] > b.lo[1] - r && q[1] < b.hi[1] + r && q[2] > b.lo[2] - r && q[2] < b.hi[2] + r) {
-        q = [...this.pos]; hit = true;
+    const hx = room.sx / 2 - r, hy = room.sy / 2 - r, hz = room.h - r;
+    const q = [clamp(p[0], -hx, hx), clamp(p[1], -hy, hy), clamp(p[2], 0, hz)];
+    const n = [0, 0, 0];
+    if (p[0] > hx) n[0] = -1; else if (p[0] < -hx) n[0] = 1;
+    if (p[1] > hy) n[1] = -1; else if (p[1] < -hy) n[1] = 1;
+    if (p[2] > hz) n[2] = -1; // ceiling only: resting on the floor is not a bump
+    let hit = n[0] !== 0 || n[1] !== 0 || n[2] !== 0;
+    // Push out of every obstacle along its shallowest axis (minimal translation) instead of
+    // reverting the step, then re-clamp to the room. Three passes are enough even for a box that
+    // sits in a corner; the push-out is at most one sub-step deep, so it is always along the
+    // direction of travel and the drone keeps its speed along the surface.
+    for (let pass = 0; pass < 3; pass++) {
+      let moved = false;
+      for (const b of room.boxes) {
+        if (b.solid === false) continue;
+        const x0 = b.lo[0] - r, x1 = b.hi[0] + r, y0 = b.lo[1] - r, y1 = b.hi[1] + r, z0 = b.lo[2] - r, z1 = b.hi[2] + r;
+        if (!(q[0] > x0 && q[0] < x1 && q[1] > y0 && q[1] < y1 && q[2] > z0 && q[2] < z1)) continue;
+        hit = moved = true;
+        const eps = 1e-4;
+        const ways = [
+          [q[0] - x0, 0, -1, x0 - eps], [x1 - q[0], 0, 1, x1 + eps],
+          [q[1] - y0, 1, -1, y0 - eps], [y1 - q[1], 1, 1, y1 + eps],
+        ];
+        if (z0 >= 0) ways.push([q[2] - z0, 2, -1, z0 - eps]); // dip under (never for floor boxes)
+        if (z1 <= hz) ways.push([z1 - q[2], 2, 1, z1 + eps]);  // hop up on top
+        ways.sort((a, c) => a[0] - c[0]);
+        const w = ways[0];
+        q[w[1]] = w[3]; n[w[1]] += w[2];
       }
+      q[0] = clamp(q[0], -hx, hx); q[1] = clamp(q[1], -hy, hy); q[2] = clamp(q[2], 0, hz);
+      if (!moved) break;
     }
-    return [q, hit];
+    const len = Math.hypot(n[0], n[1], n[2]);
+    if (len > 1e-6) { n[0] /= len; n[1] /= len; n[2] /= len; }
+    return [q, hit, n];
   }
 }
 
@@ -432,9 +467,14 @@ export class Decoder {
     this.esc = d.escape;
     this.baseline = null; this.sum = {}; this.nSettle = 0; this.elapsed = 0;
     this.state = { throttle: 0, yaw: 0, forward: 0, lateral: 0 };
-    this.escUntil = -1; this.gf = 0; this.brake = 0; this.escapes = 0; this.escPick = null;
+    this.escUntil = -1; this.gf = 0; this.brake = 0; this.escapes = 0; this.escPick = null; this.escCause = "loom";
+    // Escape direction mix (a run of "climb" escapes ratchets the drone into the roof):
+    // 10 % climb / 45 % left / 45 % right. escCeilAlt (autoplay only) refuses the climb above the
+    // altitude ceiling; null = no ceiling gate (chair run / swat game keep the plain mix).
+    this.escP = { climb: 0.10, left: 0.45 }; this.escCeilAlt = null;
+    this.contactUntil = -1; this.contactCooldown = (d.escape && d.escape.contact_s) || 2.0;
   }
-  update(rates, dt) {
+  update(rates, dt, tel = null) {
     this.elapsed += dt;
     if (this.elapsed < this.settle) {
       for (const [k, v] of Object.entries(rates)) this.sum[k] = (this.sum[k] || 0) + v;
@@ -460,10 +500,22 @@ export class Decoder {
     }
     const gfNow = Math.max(...this.esc.terms.map((k) => rates[k] || 0));
     this.gf = 0.6 * this.gf + 0.4 * gfNow;
-    if (this.gf >= this.esc.threshold_hz && this.elapsed > this.escUntil) {
+    // Mechanical contact is a second, non-visual trigger for the same giant-fibre escape, and it is
+    // what actually gets the drone unstuck: a drone pressed against a surface sees a *static* image,
+    // and with no optic flow there is no expansion, so the looming reflex can never fire. It is
+    // rate-limited so a long slide along a wall does not turn into non-stop twitching.
+    const contactReady = !!(tel && tel.touching) && this.elapsed > this.contactUntil;
+    if ((this.gf >= this.esc.threshold_hz || contactReady) && this.elapsed > this.escUntil) {
       this.escUntil = this.elapsed + this.esc.duration_s;
+      if (contactReady) this.contactUntil = this.elapsed + this.contactCooldown;
+      this.escCause = contactReady ? "contact" : "loom";
       this.escapes++;
-      this.escPick = ["climb", "left", "right"][Math.floor(Math.random() * 3)];
+      const r = Math.random();
+      const aboveCeil = this.escCeilAlt !== null && tel && tel.alt > this.escCeilAlt;
+      if (aboveCeil) this.escPick = Math.random() < 0.5 ? "left" : "right"; // never climb into the roof
+      else if (r < this.escP.climb) this.escPick = "climb";
+      else if (r < this.escP.climb + this.escP.left) this.escPick = "left";
+      else this.escPick = "right";
     }
     if (this.elapsed <= this.escUntil && this.escPick) {
       cmd.escape = true; cmd.forward = 0; cmd.throttle = 0; cmd.yaw = 0;
@@ -524,6 +576,24 @@ export class Pilot {
     this.phase = "warmup";
     this.gesture = { present: false, openness: 0, x: 0, y: 0, size: 0, label: "no hand" };
     this.last = null;
+    // Optional residual altitude governor (autoplay sets it, chair run / swat game leave it null):
+    // { target_m, dead_m, kp, max } — see altitudeTrim().
+    this.altHold = null;
+  }
+  // The hand illusion (app.js) is what visibly steers the altitude, but its balance point depends on
+  // the scene: the stronger the forward optic flow, the more the brain drifts upward, so a faster
+  // cruise used to creep up to the safety ceiling and stay there. This is a small-authority P trim on
+  // the leftover error, applied AFTER the safety filter. It is skipped during an escape so that a
+  // contact escape can still pull the drone off a surface.
+  altitudeTrim(cmd, alt) {
+    const g = this.altHold;
+    if (cmd.escape) return cmd;
+    const e = alt - g.target_m;
+    if (Math.abs(e) <= g.dead_m) return cmd;
+    const trim = clamp(-g.kp * (e - Math.sign(e) * g.dead_m), -g.max, g.max);
+    cmd.throttle = clamp(cmd.throttle + trim, -1, 1);
+    cmd.note = [cmd.note, "alt hold"].filter(Boolean).join("; ");
+    return cmd;
   }
   tick() {
     const dt = this.dt, d = this.drone;
@@ -542,8 +612,9 @@ export class Pilot {
       vision = this.illusion.apply(vision, this.gesture, this.t);
       const r = this.brain.tick(this.encoder.encode(vision, tel.yawRateDps), dt * 1000);
       rates = r.rates; spikes = r.spikes;
-      const raw = this.decoder.update(rates, dt);
+      const raw = this.decoder.update(rates, dt, tel);
       cmd = this.safety.filter(raw, tel, dt);
+      if (this.altHold) cmd = this.altitudeTrim(cmd, tel.alt);
       d.send(cmd);
       this.t += dt;
     }

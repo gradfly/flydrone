@@ -399,6 +399,26 @@ function foamTex() {
   foamTexCache = t;
   return t;
 }
+// The proximity highlight is drawn as 12 solid neon "tubes" instead of a LineSegments wireframe:
+// WebGL ignores LineBasicMaterial.linewidth, so a line outline is always a single hairline pixel
+// regardless of how loud the alarm is. A box outline of thin boxes reads as a real thick outline.
+const NEON_TUBE = 0.034; // tube thickness in metres (~15x a 1 px line at the default camera distance)
+function neonFrame(sx, hy, sz) {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshBasicMaterial({ color: 0x4cc9f0, transparent: true, opacity: 0.9 });
+  const t = NEON_TUBE, w = sx + 0.004, d = sz + 0.004;
+  const bar = (a, b, c, x, y, z) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(a, b, c), mat);
+    m.position.set(x, y, z); g.add(m);
+  };
+  for (const sx2 of [-1, 1]) for (const sz2 of [-1, 1]) bar(t, hy, t, (sx2 * w) / 2, hy / 2, (sz2 * d) / 2); // 4 posts
+  for (const y of [t / 2, hy - t / 2]) {                                                                  // 2 rims
+    for (const sz2 of [-1, 1]) bar(w + t, t, t, 0, y, (sz2 * d) / 2);
+    for (const sx2 of [-1, 1]) bar(t, t, d + t, (sx2 * w) / 2, y, 0);
+  }
+  return { group: g, mat };
+}
+
 export function createObstacleMesh(box) {
   const [x0, y0] = box.lo, [x1, y1, top] = box.hi;
   const sx = x1 - x0, sz = y1 - y0;
@@ -413,11 +433,14 @@ export function createObstacleMesh(box) {
     g.add(band);
     y += bh; k += 1 + Math.floor(Math.random() * 3);
   }
-  const neon = new THREE.LineSegments(
-    new THREE.EdgesGeometry(new THREE.BoxGeometry(sx, top, sz)),
-    new THREE.LineBasicMaterial({ color: 0x4cc9f0, transparent: true, opacity: 0.9 })
-  );
-  neon.position.y = top / 2;
+  const { group: neon, mat: neonMat } = neonFrame(sx, top, sz);
   g.add(neon);
-  return { group: g, neon };
+  // translucent shell that inflates and brightens with the proximity alarm (hidden by default)
+  const halo = new THREE.Mesh(
+    new THREE.BoxGeometry(sx + 0.14, top + 0.14, sz + 0.14),
+    new THREE.MeshBasicMaterial({ color: 0x4cc9f0, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide })
+  );
+  halo.position.y = top / 2; halo.visible = false; halo.renderOrder = 3;
+  g.add(halo);
+  return { group: g, neon, neonMat, halo, top };
 }
