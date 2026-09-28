@@ -99,13 +99,31 @@ export class Brain {
 }
 
 // ------------------------------------------------------------------ room + camera
+// Eight foam-block obstacles are dropped into the arena at random (seeded RNG, so the
+// simulator, the retina view and the 3D visuals always agree on the same layout).
+// Footprint is a fixed 0.5 m x 0.5 m (one floor mat tile); the lo corner snaps to the
+// 0.5 m mat grid, only the height varies (1.1..2.0 m).
+export function makeObstacles(seed = (Math.random() * 0xffffffff) >>> 0) {
+  const rng = mulberry32(seed);
+  const starts = [[-1.5, 0], [-0.9, 0.05], [-1.9, -0.3]]; // pilot start (x, y): gestures / chair / game
+  const boxes = [];
+  let guard = 0;
+  while (boxes.length < 8 && guard++ < 5000) {
+    const lo = [-2.5 + Math.floor(rng() * 10) * 0.5, -2.5 + Math.floor(rng() * 10) * 0.5];
+    const hi = [lo[0] + 0.5, lo[1] + 0.5];
+    const h = 1.1 + rng() * 0.9;
+    // keep a launch pad clear around every pilot start position
+    if (starts.some(([sx, sy]) => sx > lo[0] - 0.9 && sx < hi[0] + 0.9 && sy > lo[1] - 0.9 && sy < hi[1] + 0.9)) continue;
+    // keep obstacles apart so the drone can slip between them
+    if (boxes.some((b) => lo[0] < b.hi[0] + 0.45 && hi[0] > b.lo[0] - 0.45 && lo[1] < b.hi[1] + 0.45 && hi[1] > b.lo[1] - 0.45)) continue;
+    boxes.push({ lo: [lo[0], lo[1], 0], hi: [hi[0], hi[1], h], shade: 0.16 + rng() * 0.14, name: `obstacle${boxes.length + 1}` });
+  }
+  return boxes;
+}
+
 export const ROOM = {
   sx: 6, sy: 6, h: 2.7,
-  boxes: [
-    { lo: [1.2, -0.25, 0], hi: [1.7, 0.25, 1.15], shade: 0.12, name: "chair" },
-    { lo: [-2.9, 1.2, 0], hi: [-1.3, 2.9, 0.55], shade: 0.3, name: "bed" },
-    { lo: [2.4, -2.9, 0], hi: [2.9, -1.9, 1.9], shade: 0.22, name: "wardrobe" },
-  ],
+  boxes: makeObstacles(),
 };
 
 export class RayCamera {
@@ -142,7 +160,8 @@ export class RayCamera {
       if (dz !== 0) {
         let t = -pz / dz;
         if (t > 1e-6 && t < tb) {
-          const cx = Math.floor((px + t * dx) / 0.35) + Math.floor((py + t * dy) / 0.35);
+          // foam-mat floor: 0.5 m checker tiles, like the 3D arena
+          const cx = Math.floor((px + t * dx) / 0.5) + Math.floor((py + t * dy) / 0.5);
           tb = t; shade = ((cx % 2) + 2) % 2 * 0.35 + 0.25;
         }
         t = (room.h - pz) / dz;

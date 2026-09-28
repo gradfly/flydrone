@@ -5,7 +5,7 @@ import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
-import { Pilot } from "./engine.js?v=4";
+import { Pilot, ROOM } from "./engine.js?v=4";
 import { createDrone, createFly, createSwatter } from "./models.js";
 import { createRoom } from "./room.js";
 
@@ -55,7 +55,7 @@ controls.target.set(-1, 1, 0);
 controls.addEventListener("start", () => (controls.autoRotate = false));
 
 const V = (x, y, z) => new THREE.Vector3(x, z, -y); // sim (z up) -> three (y up)
-const room = createRoom(scene);
+const room = createRoom(scene, ROOM.boxes);
 
 // drone + fly mascot
 const droneRoot = new THREE.Group(); scene.add(droneRoot);
@@ -553,9 +553,7 @@ const pickables = [
   { obj: fly.group, name: "fly", tip: "<b>the fly</b> · a mascot riding along. Click it!" },
   { obj: drone.group, name: "drone", tip: "<b>the drone</b> · its camera is the fly brain's eyes" },
   { obj: swatter.group, name: "swatter", tip: "<b>swatter</b> · the brain only knows it from optic flow" },
-  { obj: room.furniture.chair.group, name: "chair", tip: "<b>chair</b> · obstacle (try CHAIR RUN)" },
-  { obj: room.furniture.bed.group, name: "bed", tip: "<b>bed</b>" },
-  { obj: room.furniture.wardrobe.group, name: "wardrobe", tip: "<b>wardrobe</b>" },
+  { obj: room.obstacles, name: "obstacle", tip: "<b>foam obstacles</b> · 8 random collision boxes (try CHAIR RUN)" },
 ];
 function pick(ev) {
   const r = canvas.getBoundingClientRect();
@@ -715,7 +713,7 @@ function updateScene(alpha, dtReal) {
   }
   stepParticles(dtReal);
   const loom = pilot.last ? pilot.last.vision.loomLevel : 0;
-  room.highlight("chair", loom);
+  room.highlightNearest(p, loom);
   room.update(camera, dtReal);
   updatePopups(dtReal);
   sfx.update(pilot.drone.flying, c.throttle);

@@ -375,3 +375,49 @@ export function createSwatter() {
   g.traverse((o) => { if (o.isMesh) o.castShadow = true; });
   return { group: g };
 }
+
+// ====================================================================== foam obstacles
+// Visual for one simulator collision box: a pillar of stacked foam-mat bands in
+// blue / gray / white, like the EVA puzzle-mat obstacles of the flight arena.
+const FOAM_COLORS = [0x9aa0a8, 0xc9cdd2, 0xece9e2, 0x878e98, 0xc9cdd2, 0xece9e2, 0x9aa0a8, 0x3b6fd6, 0x2c4a9e];
+let foamTexCache = null;
+function foamTex() {
+  if (foamTexCache) return foamTexCache;
+  const t = tex(256, 256, (c, w, h) => {
+    c.fillStyle = "#ffffff"; c.fillRect(0, 0, w, h);
+    // diamond waffle pattern of EVA foam mats
+    const s = 32;
+    for (let y = 0; y < h; y += s) for (let x = 0; x < w; x += s) {
+      c.strokeStyle = "rgba(0,0,0,.14)"; c.lineWidth = 2;
+      c.beginPath();
+      c.moveTo(x + s / 2, y + 3); c.lineTo(x + s - 3, y + s / 2); c.lineTo(x + s / 2, y + s - 3); c.lineTo(x + 3, y + s / 2);
+      c.closePath(); c.stroke();
+    }
+    for (let i = 0; i < 500; i++) { c.fillStyle = `rgba(0,0,0,${0.02 + Math.random() * 0.04})`; c.fillRect(Math.random() * w, Math.random() * h, 2, 2); }
+  });
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(1.4, 1.4);
+  foamTexCache = t;
+  return t;
+}
+export function createObstacleMesh(box) {
+  const [x0, y0] = box.lo, [x1, y1, top] = box.hi;
+  const sx = x1 - x0, sz = y1 - y0;
+  const g = new THREE.Group();
+  g.position.set((x0 + x1) / 2, 0, -(y0 + y1) / 2); // sim -> three: three.z = -sim.y
+  const mat = (color) => new THREE.MeshStandardMaterial({ color, map: foamTex(), roughness: 0.95 });
+  let y = 0, k = Math.floor(Math.random() * FOAM_COLORS.length);
+  while (y < top - 0.01) {
+    const bh = Math.min(top - y, Math.random() * 0.3);
+    const band = mesh(new THREE.BoxGeometry(sx - 0.008, bh, sz - 0.008), mat(FOAM_COLORS[k % FOAM_COLORS.length]), 0, y + bh / 2, 0);
+    band.receiveShadow = true;
+    g.add(band);
+    y += bh; k += 1 + Math.floor(Math.random() * 3);
+  }
+  const neon = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(sx, top, sz)),
+    new THREE.LineBasicMaterial({ color: 0x4cc9f0, transparent: true, opacity: 0.9 })
+  );
+  neon.position.y = top / 2;
+  g.add(neon);
+  return { group: g, neon };
+}
