@@ -1,5 +1,5 @@
 // The flight arena the drone flies in: white walls that hide when the camera is behind them,
-// a blue/white/gray foam-mat floor, and eight foam-block obstacles that mirror the simulator's
+// a blue/white/gray foam-mat floor, and the foam-block obstacles that mirror the simulator's
 // collision boxes (passed in from engine.js ROOM.boxes). Two themes (day / night).
 import * as THREE from "three";
 import { createObstacleMesh } from "./models.js";

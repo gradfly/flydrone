@@ -920,8 +920,8 @@
       "height": 72,
       "grid": [6, 8],
       "flow_gain": 0.8,
-      "loom_gain": 10.0,
-      "loom_floor": 0.1,
+      "loom_gain": 15.0,
+      "loom_floor": 0.12,
       "blur": 1
     },
     "decoder": {
@@ -936,7 +936,7 @@
           "terms": { "DNg02_L": 0.5, "DNg02_R": 0.5 }
         },
         "yaw": {
-          "gain": 0.2,
+          "gain": 0.4,
           "terms": {
             "DNg02_R": 1.0,
             "DNg02_L": -1.0,
@@ -956,16 +956,17 @@
       },
       "escape": {
         "terms": ["DNp01_L", "DNp01_R"],
-        "threshold_hz": 12,
+        "threshold_hz": 10,
         "mode": "climb",
-        "duration_s": 0.7,
-        "strength": 1.0
+        "duration_s": 0.6,
+        "strength": 1.0,
+        "contact_s": 0.9
       }
     },
     "safety": {
       "max_throttle": 0.6,
       "max_yaw": 4.0,
-      "max_forward": 0.8,
+      "max_forward": 2.0,
       "max_lateral": 0.8,
       "slew_per_s": 2.5,
       "min_alt_m": 0.3,

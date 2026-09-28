@@ -57,7 +57,7 @@ optic-lobe column coordinates that would allow true retinotopy; that is on the r
 | lift / thrust | DNg02 (population, ≥15 pairs) | activating more DNg02 cells increases wing-stroke amplitude roughly linearly; left and right act independently during steering (Namiki et al., *Curr Biol* 2022, [paper](https://www.cell.com/current-biology/fulltext/S0960-9822(22)00019-7), [preprint](https://www.biorxiv.org/content/10.1101/2021.08.05.455281v1.full)) | throttle ∝ (L + R − rest) |
 | steering | DNg02 L vs R | rightward visual motion raises right DNg02 activity and lowers left (same paper) | yaw ∝ (R − L) |
 | evasive turns | DNp03 | receives looming input, activity predicts flight saccades, activation triggers turns ([*Curr Biol* 2024](https://www.sciencedirect.com/science/article/pii/S0960982224016415), [*Curr Biol* 2025](https://www.cell.com/current-biology/fulltext/S0960-9822(25)01542-8)) | yaw away from the more active side, brakes cruise |
-| escape | DNp01, the giant fiber | looming-evoked escape takeoff; GF spike timing selects short vs long takeoff (Ache et al. 2019; von Reyn et al. 2014) | smoothed rate above threshold → 0.7 s climb / drop / brake |
+| escape | DNp01, the giant fiber | looming-evoked escape takeoff; GF spike timing selects short vs long takeoff (Ache et al. 2019; von Reyn et al. 2014) | smoothed rate above threshold → the escape is read off the eye, never off a die. For each half of the eye the local expansion (flow divergence = 2·Vz/Z, i.e. how close the nearest surface on that side is) is averaged; the half that is closer loses, so a closer left half → turn right and a closer right half → turn left. Expansion balanced across both halves means the object is coming head-on: no side to pick, so the reflex may become a 1.5 s held climb — gated to 35 % of such readings (a climb is the expensive reflex, and head-on looming is common, so climbing every time turned the flight into a yo-yo); the rest are spent as a turn toward the marginally closer half. That climb keeps cruising forward, with a new looming allowed to re-pick it mid-way. Only a blind escape (a bump: a static image has no expansion at all) falls back to a random turn off the surface |
 
 **Engineering choices, not biology:**
 
@@ -69,7 +69,13 @@ optic-lobe column coordinates that would allow true retinotopy; that is on the r
 - **Sign conventions** (which side is "right") follow the papers above for MiniFly. On MaleCNS the fitted
   read-out decides.
 - **Cruise.** Forward flight speed is a number you choose (`decoder.cruise`). The brain can only brake it.
-- **Escape actions.** "climb", "drop" or "brake" are drone-friendly stand-ins for a jump takeoff.
+  A real fly slows down for a looming object, it does not stop dead in the air, so the demo puts a floor
+  under that brake (`decoder.cruiseFloor`): the brake keeps up to 60 % of the speed away, never all of it.
+- **Escape actions.** "climb", "drop" or "brake" are drone-friendly stand-ins for a jump takeoff. Which
+  one fires is a property of the moment, not of a random number generator: the escape reads the two
+  halves of the eye (see the table above), so the same visual situation always produces the same reflex.
+  A bump escape (contact, no optic flow to read) additionally shoves the drone off the surface, because
+  a fly jumps away from a wall rather than leaning on it.
 
 ## MiniFly wiring
 

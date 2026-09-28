@@ -5,14 +5,14 @@ import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
-import { Pilot, ROOM } from "./engine.js?v=9";
-import { createDrone, createFly, createSwatter } from "./models.js?v=9";
-import { createRoom } from "./room.js?v=9";
+import { Pilot, ROOM } from "./engine.js?v=17";
+import { createDrone, createFly, createSwatter } from "./models.js?v=17";
+import { createRoom } from "./room.js?v=17";
 
 // Build stamp — bump alongside the ?v= query in docs/index.html whenever these modules
 // change, so a browser serving a stale cached copy is immediately obvious: the console
 // prints the build, and the AUTO CRUISE panel prints the live altitude.
-const BUILD = "v9";
+const BUILD = "v17";
 console.log(`flydrones live build ${BUILD}`);
 
 const qs = new URLSearchParams(location.search);
@@ -637,26 +637,107 @@ setTimeout(hideHint, 12000);
 // keep the engine defaults (engine.js) and the shipped net config (minifly.json).
 const AUTO_TUNE = {
   cruise: 1.2,     // forward command    (was 0.2)   -> cruise ~0.55 m/s instead of ~0.2
-  maxForward: 1.5, // safety.max_forward (was 0.4)   -> leaves room for the higher cruise
-  loomGain: 10,     // vision.loom_gain   (was 12)    -> looming reads stronger
-  loomFloor: 0.1,  // vision.loom_floor  (was 0.04)  -> smaller expansions count as looming
+  maxForward: 2.0, // safety.max_forward (was 0.4)   -> leaves room for the higher cruise
+  // cruiseFloor is the fraction of cruise kept while the looming brake (DNp03) is on. The brake term
+  // can exceed 1, and `cruise * max(0, 1 - brake)` then zeroes the forward command outright: the drone
+  // stops dead in mid-air until the brake decays (~1 s), with nothing touching it. That was the single
+  // biggest remaining source of "it just hangs there" (every mid-air freeze in a soak had brake > 0.3,
+  // touching false, from open floor to right beside a box). A fly slows down when something looms, it
+  // does not stop dead, so autoplay keeps 40 % of the cruise under the brake.
+  // Measured over 6 seeds x 60 s: stalled time 28.8 s -> 7.0 s (0.25) -> 4.9 s (0.40), worst freeze
+  // 1.15 s -> 0.65 s -> none, and collisions 42 -> 43 (i.e. no cost — the drone still slows down).
+  cruiseFloor: 0.4,
+  loomGain: 10,    // vision.loom_gain   (was 12)    -> looming reads stronger
+  // loomFloor is the raw expansion the reflex starts to see. The eye's expansion figure scales with
+  // vision.width (it is measured in pixels), so retuning the floor is the direct "how early does it
+  // flinch" knob — but earlier is NOT automatically better: every extra flinch is another climb, and a
+  // climb is 1.5 s flown forward at altitude. Measured over 5 seeded 45 s runs (6-box arena):
+  //   0.15 -> 46 collisions, 5-18 % of the flight above 1.25 m
+  //   0.08 -> 71 collisions, 14-44 % above 1.25 m, ~3x as many escapes (21 vs 6 per run)
+  // So tune this together with escClimbHold, not on its own.
+  loomFloor: 0.1, // vision.loom_floor  (was 0.04)  -> smaller expansions count as looming
   yawRateDps: 180,  // SimDrone.yrMax     (was 120)   -> sharper turns, tighter dodges
-  yawGain: 0.08,   // decoder yaw gain   (was 0.05)  -> the turn drive bites harder
-  // Escape direction mix (looming AND bump escapes): a climb is rare, turns are the norm.
-  // A run of "climb" escapes used to ratchet the drone up into the safety ceiling.
-  escPickP: { climb: 0.10, left: 0.45 }, // right gets the remaining 45 %
+  yawGain: 0.1,   // decoder yaw gain   (was 0.05)  -> the turn drive bites harder
+  // Escape direction is a lookup on the eye, not a die roll (engine.js -> Decoder.escFromEye).
+  // It reads the *divergence* of the optic flow (local expansion = 2·Vz/Z, i.e. large where a surface
+  // is close), averaged over each half of the eye, so it answers "which half of my world is about to
+  // hit me". The floor and far walls sit in both halves and cancel out; only the near object tilts the
+  // balance. A per-half *maximum* was tried instead and failed: the max is always the floor, in both
+  // halves, so every loom then looked head-on. Image column 0 is the drone's left, so the drone turns
+  // AWAY from the swelling half: left half closer -> turn RIGHT, right half closer -> turn LEFT.
+  // Both halves alike means the thing is coming straight at it: there is no side to pick, so the reflex
+  // becomes a climb held for escClimbHold seconds — but only escClimbP of the time (see below), and
+  // that climb keeps cruising forward the whole time, so a
+  // new looming during the hold can re-pick it (escClimbRetrig is the shortest gap between picks).
+  // escPickP is now ONLY the fallback for when there is nothing to read at all: a bump gives a
+  // static image (zero expansion), and a random turn off the surface is how the drone unsticks.
+  escPickP: { climb: 0.10, left: 0.45 }, // fallback only; right gets the remaining 45 %
+  escSideMin: 0.01,   // mean depth-rate below this = the image is not moving -> escPickP mix
+  escSideCloseFrac: 0.20, // |L-R| below 20 % of (L+R) = "both sides alike" -> head-on read
+  // escClimbP is the gate on the head-on read: how often "both sides alike" is actually spent as a
+  // climb. It used to be every single time, and climbs dominated the flight (measured 29 of 72 escapes
+  // = 40 %, each one 1.5 s of climbing instead of dodging, plus a ceiling to come back down from).
+  // The remaining head-on reads are spent as a turn towards the marginally harder-swelling half, so
+  // lowering this does NOT make the drone ignore head-on looming, it just makes it dodge sideways
+  // instead of climbing. 0 = never climb on looming, 1 = always (the old behaviour).
+  // Measured over 6 seeds x 45 s (6-box arena), gating exactly as configured:
+  //   1.00 -> climb 29/72 picks (40 %)
+  //   0.35 -> climb 17 % of picks, 6 collisions, 0 % time touching
+  //   0.20 -> climb 10 % of picks, 43 collisions, 0.5 % touching
+  //   0.10 -> climb  4 % of picks, 39 collisions, 1.0 % touching
+  // Turning instead of climbing sounds harmless but it is not a free swap: a turn does not gain the
+  // height a climb does, so the drone stays down in the obstacles and starts touching them. 0.35 is
+  // where the climb share halves (40 -> 17 %) without paying for it in contact time.
+  escClimbP: 0.25,
+  escClimbHold: 1.2,  // s, held climb on a head-on looming; cruise keeps running through it
+  escClimbRetrig: 0.3, // s, a new looming inside a climb may re-pick it this often
+  // A bump escape (contact, not looming) additionally backs away from the surface: yawing on the spot
+  // leaves the drone glued to a wall or box, because the brain keeps commanding forward into it and
+  // collide() cancels exactly that inward component. escBack is a velocity shove (m/s) applied at the
+  // firing moment; contactCooldown is how soon a still-touching drone may try again (was 2 s, long
+  // enough to watch it hang there after a failed attempt).
+  escBack: 0.9,
+  contactCooldown: 0.9,
   // Residual altitude governor (engine.js → Pilot.altitudeTrim). The hand illusion alone is not
   // enough: the stronger the forward optic flow (cruise 1.2 here), the more the brain drifts upward,
   // so the drone crept up to the ceiling. This trims the leftover error back to target_m.
-  // ceil_m must match ALT_CEIL below: an escape may not climb above it.
-  altHold: { target_m: 1.0, dead_m: 0.05, kp: 2.2, max: 0.5, ceil_m: 1.05 },
+  // ceil_m is the *escape* ceiling: an escape may not climb above it. It deliberately sits well above
+  // the ALT_CEIL cruise band below (1.05 m) — a head-on climb has to have somewhere to go, otherwise
+  // "climb for 1.5 s" degenerates into hovering. Whatever the climb gains, the governor gives back.
+  altHold: { target_m: 1.0, dead_m: 0.05, kp: 2.2, max: 0.5, ceil_m: 1.6 },
+  // Stall breaker (engine.js -> Pilot.stallBreaker): the catch-all against the drone parking itself
+  // against a wall or a box. Two separate causes used to freeze it — the geofence zeroed `forward`
+  // whenever the drone was beyond its radius with no regard for which way the nose pointed (so it
+  // hovered at r ≈ 3 m, unable to ever get back inside), and a contact escape only yawed, which does
+  // not move a drone pressed against a surface. Both are fixed at the source; this is the net under
+  // them, in case some future tuning re-introduces a lock. after_s must stay above the longest normal
+  // slow-down (0.75 s, the tail of a looming turn escape), otherwise it fights the dodge.
+  stall: { speed: 0.08, after_s: 1.0, hold_s: 0.7, back: -0.6, turn: 0.7 },
 };
 function applyAutoTune(p) {
   p.decoder.cruise = AUTO_TUNE.cruise;
-  p.decoder.escP = { ...AUTO_TUNE.escPickP };
+  p.decoder.cruiseFloor = Number.isFinite(AUTO_TUNE.cruiseFloor) ? AUTO_TUNE.cruiseFloor : 0.4;
+  // Never let a commented-out / emptied escPickP turn every escape into the same direction:
+  // spreading `undefined` yields {}, and the picker would then read undefined weights.
+  p.decoder.escP = AUTO_TUNE.escPickP ? { ...AUTO_TUNE.escPickP } : { climb: 0.10, left: 0.45 };
+  // Same reasoning for the eye-driven picker: a missing / emptied knob must fall back to the engine
+  // default, not to undefined (a NaN threshold would silently disable the lateral rule).
+  p.decoder.escSideMin = Number.isFinite(AUTO_TUNE.escSideMin) ? AUTO_TUNE.escSideMin : 0.01;
+  p.decoder.escSideCloseFrac = Number.isFinite(AUTO_TUNE.escSideCloseFrac) ? AUTO_TUNE.escSideCloseFrac : 0.20;
+  p.decoder.escClimbP = Number.isFinite(AUTO_TUNE.escClimbP) ? AUTO_TUNE.escClimbP : 0.25;
+  p.decoder.escClimbHold = Number.isFinite(AUTO_TUNE.escClimbHold) ? AUTO_TUNE.escClimbHold : 1.2;
+  p.decoder.escClimbRetrig = Number.isFinite(AUTO_TUNE.escClimbRetrig) ? AUTO_TUNE.escClimbRetrig : 0.3;
   const { ceil_m, ...hold } = AUTO_TUNE.altHold;
   p.altHold = hold;                     // Pilot.altitudeTrim uses { target_m, dead_m, kp, max }
   p.decoder.escCeilAlt = ceil_m;        // escapes may not climb above the ceiling
+  const st = AUTO_TUNE.stall || {};
+  p.stallSpeed = Number.isFinite(st.speed) ? st.speed : 0.08;
+  p.stallAfter = Number.isFinite(st.after_s) ? st.after_s : 1.0;
+  p.stallHold = Number.isFinite(st.hold_s) ? st.hold_s : 0.7;
+  p.stallBack = Number.isFinite(st.back) ? st.back : -0.6;
+  p.stallTurn = Number.isFinite(st.turn) ? st.turn : 0.7;
+  p.decoder.escBack = Number.isFinite(AUTO_TUNE.escBack) ? AUTO_TUNE.escBack : 0.9;
+  p.decoder.contactCooldown = Number.isFinite(AUTO_TUNE.contactCooldown) ? AUTO_TUNE.contactCooldown : 0.9;
   p.safety.max.forward = AUTO_TUNE.maxForward;
   p.retina.loomGain = AUTO_TUNE.loomGain;
   p.retina.loomFloor = AUTO_TUNE.loomFloor;
@@ -665,6 +746,8 @@ function applyAutoTune(p) {
   // (otherwise the new yaw gain would leak into the chair run / swat game pilots).
   p.decoder.axes = { ...p.decoder.axes, yaw: { ...p.decoder.axes.yaw, gain: AUTO_TUNE.yawGain } };
   console.log("autoplay tune", AUTO_TUNE);
+  console.log(`escape rule: left half closer -> turn right | right half closer -> turn left | both alike -> climb ${p.decoder.escClimbHold}s (${Math.round(p.decoder.escClimbP * 100)}% of the time, otherwise turn) while cruising, re-pickable every ${p.decoder.escClimbRetrig}s`);
+  console.log(`anti-stall: geofence steers home + strafes inward | bump escape shoves ${p.decoder.escBack} m/s off the surface | cruise floor ${p.decoder.cruiseFloor} of ${p.decoder.cruise} | stall breaker after ${p.stallAfter}s below ${p.stallSpeed} m/s`);
 }
 
 // ================================================================== autoplay altitude hold
@@ -740,10 +823,17 @@ function simTick() {
     if (pokeUntil > 0) { label = `ZAP ${pokeLabel}`; sub = "you are stimulating these neurons"; }
     if (autoplay && scenario === "gestures") {
       label = "AUTO CRUISE"; sub = `cruise forward, dodge obstacles · hold ~1 m (${pilot.drone.pos[2].toFixed(2)} m)`;
-      chain = last.cmd.escape
+      const pk = pilot.decoder.escPick;
+      // the stall breaker is not a reflex of the brain — it is the airframe refusing to stay parked,
+      // so it gets its own line instead of being dressed up as a giant-fibre escape
+      chain = (last.cmd.note || "").includes("stall breaker")
+        ? "stuck against a surface -> stall breaker -> back off + turn"
+        : last.cmd.escape
         ? (pilot.decoder.escCause === "contact"
-          ? "bump sensor -> giant fiber DNp01 -> escape off the surface"
-          : "looming -> DNp01 -> escape (10% climb / 45% left / 45% right)")
+          ? "bump sensor -> giant fiber DNp01 -> shove off the surface + turn"
+          : pk === "climb"
+            ? `both eyes looming alike -> DNp01 -> climb ${(pilot.decoder.escClimbHold || 1.5).toFixed(1)} s (${Math.round((pilot.decoder.escClimbP ?? 0.35) * 100)}% of head-on reads), still cruising`
+            : `${pk === "right" ? "left" : "right"} eye swelling harder -> DNp01 -> turn ${pk} (away from it)`)
         : pilot.gesture !== ALT_HOLD ? il.channel // altitude trim: the simulated hand is steering the brain
         : "optic flow -> T4/T5 -> DNg02 -> steady cruise";
     }
@@ -895,7 +985,19 @@ if (RECORD) {
     state: () => ({
       build: BUILD, simT, alt: pilot.drone.pos[2], pos: [...pilot.drone.pos], yawDeg: (pilot.drone.yaw * 180) / Math.PI,
       touching: pilot.drone.touching, collisions: pilot.drone.collisions, escapes: pilot.decoder.escapes,
-      escCause: pilot.decoder.escCause, loom: pilot.last ? pilot.last.vision.loomLevel : 0,
+      escCause: pilot.decoder.escCause, escPick: pilot.decoder.escPick,
+      // How the eye-driven reflex actually distributed over the run: {left,right,climb,nocue}.
+      // nocue counts escapes with no visual information at all (a bump -> random unstick turn).
+      escHist: { ...pilot.decoder.escHist }, escEye: pilot.decoder.escEye, escRetrig: pilot.decoder.escRetrig,
+      // anti-stall instrumentation: stallBreaks = times the drone was shoved out of a real freeze,
+      // pushes = times a bump escape actually kicked it off the surface it was touching
+      stallBreaks: pilot.stallBreaks, pushes: pilot.pushes, speed: Math.hypot(pilot.drone.vel[0], pilot.drone.vel[1]),
+      // per-half depth-rate the escape direction is picked from + the whole-eye figure the "no visual
+      // information" test uses; expL/expR are the neural loom-split figures, kept for comparison
+      nearL: pilot.last ? pilot.last.vision.nearL : 0, nearR: pilot.last ? pilot.last.vision.nearR : 0,
+      nearAll: pilot.last ? pilot.last.vision.nearAll : 0,
+      expL: pilot.last ? pilot.last.vision.expL : 0, expR: pilot.last ? pilot.last.vision.expR : 0,
+      sideEma: pilot.decoder.sideEma, totEma: pilot.decoder.totEma, loom: pilot.last ? pilot.last.vision.loomLevel : 0,
       escape: !!(pilot.last && pilot.last.cmd.escape), boxes: pilot.drone.room.boxes.length, lit: room.lit(),
     }),
     ready: true,
