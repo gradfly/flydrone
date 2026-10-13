@@ -11,6 +11,7 @@ from .brain import Brain
 from .drones.base import Drone
 from .drones.sim import SimDrone
 from .motor import FlightCommand, MotorDecoder
+from .motor.escape import NearCue
 from .safety import SafetyGovernor, Telemetry
 from .senses import GestureIllusion, InputEncoder, Retina
 from .senses.gestures import GestureState
@@ -35,20 +36,34 @@ class TickInfo:
 class Pilot:
     """One brain flying one drone."""
 
-    def __init__(self, brain: Brain, drone: Drone, cfg: dict, gestures=None, webcam=None, name: str = "fly-1"):
+    def __init__(self, brain: Brain, drone: Drone, cfg: dict, gestures=None, webcam=None, name: str = "fly-1", camera=None):
         self.name = name
         self.brain = brain
         self.drone = drone
         self.cfg = cfg
         self.gestures = gestures
         self.webcam = webcam
+        # A capture device that plays the role of the drone camera: a USB UVC
+        # receiver fed by the drone's video transmitter. Takes precedence over
+        # drone.frame() and is captured once per tick, shared with gestures.
+        self.camera = camera
         self.retina = Retina.from_config(cfg)
         self.encoder = InputEncoder(brain.connectome, cfg)
         self.decoder = MotorDecoder(cfg)
+        # The escape direction is read off the eye, not picked at random: this keeps the
+        # per-half depth-rate (mean flow divergence) smoothed across ticks, so the side
+        # cue has history at the moment the giant fiber fires. See motor/escape.py.
+        self.near = NearCue()
         self.safety = SafetyGovernor(cfg)
         self.illusion = GestureIllusion()
         self.history: list[dict] = []
         self._t0 = None
+
+    def _frame(self):
+        """The fly's eyes: external capture device if there is one, else the drone camera."""
+        if self.camera is not None:
+            return self.camera.capture()
+        return self.drone.frame() if self.drone.has_camera else None
 
     def warmup(self, seconds: float, dt: float = 0.05) -> None:
         """Let the brain settle on the ground (still scene) and measure resting rates."""
@@ -56,7 +71,7 @@ class Pilot:
 
         t = -seconds
         while t < 0:
-            frame = self.drone.frame() if self.drone.has_camera else None
+            frame = self._frame()
             vision = self.retina.encode(frame)
             inputs = self.encoder.encode(vision, 0.0)
             rates = self.brain.tick(inputs, ms=dt * 1000.0)
@@ -65,7 +80,7 @@ class Pilot:
         self.drone.send(_FC.hover("warmup done"))
 
     def tick(self, t: float, dt: float) -> TickInfo:
-        frame = self.drone.frame() if self.drone.has_camera else None
+        frame = self._frame()
         cam = self.webcam.read() if self.webcam is not None else None
         vision = self.retina.encode(frame)
         g = None
@@ -75,8 +90,16 @@ class Pilot:
         tel = self.drone.telemetry()
         inputs = self.encoder.encode(vision, tel.yaw_rate_dps)
         rates = self.brain.tick(inputs, ms=dt * 1000.0)
-        raw = self.decoder.update(rates, dt)
+        flow = self.near.update(vision)  # per-half depth rate, read by the escape picker
+        raw = self.decoder.update(rates, dt, tel=tel, flow=flow)
         cmd = self.safety.filter(raw, tel, dt)
+        # A contact escape also gets a physical shove off the surface: a turn alone leaves
+        # the drone pressed against it, because the collision solver cancels exactly the
+        # forward component the brain keeps commanding. Applied *after* the governor,
+        # like the stall breaker, so it cannot be clamped away.
+        if raw.escape and self.decoder.esc_cause == "contact" and hasattr(self.drone, "push_off"):
+            self.drone.push_off()
+            self.decoder.esc_cause = None  # one shove per escape
         if self.safety.land_requested:
             self.drone.land()
         else:
@@ -86,6 +109,15 @@ class Pilot:
         return TickInfo(t, cam if cam is not None else frame, rates, raw, cmd, tel, g, self.illusion.mode if g is not None else "camera",
                         self.brain.last_raster, self.brain.realtime_factor, int(self.brain.last_counts.sum()),
                         self.brain.net.t_ms)
+
+
+def describe_eyes(pilot: Pilot) -> str:
+    """One line telling the operator what is actually feeding the retina."""
+    if pilot.camera is not None:
+        return f"UVC capture device {pilot.camera.describe()}"
+    if pilot.drone.has_camera:
+        return f"drone camera ({pilot.drone.name})"
+    return "no camera"
 
 
 def run_sim(pilots: list[Pilot], seconds: float, hz: float = 20.0, on_tick=None, physics_substeps: int = 4) -> list[list[TickInfo]]:

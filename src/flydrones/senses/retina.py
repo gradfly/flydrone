@@ -36,6 +36,13 @@ class VisualFrame:
     expansion: float = 0.0
     rotation: float = 0.0  # + = scene moves right (drone yawing left)
     vertical: float = 0.0  # + = scene moves up (drone sinking)
+    # Raw per-cell flow, px/cell/frame, texture-weighted: (rows, cols*2), column 0 = left of
+    # the image. Not needed by the encoder, but the escape direction reads it (the mean
+    # divergence per half is what locates an approaching object - see motor/escape.py).
+    # Kept here rather than recomputed so the retina only does the Lucas-Kanade solve once.
+    vx: np.ndarray | None = None
+    vy: np.ndarray | None = None
+    tex: np.ndarray | None = None
 
     def scalars(self) -> dict[str, float]:
         return {"expansion": self.expansion, "rotation": self.rotation, "vertical": self.vertical}
@@ -72,26 +79,37 @@ def box_blur(img: np.ndarray, r: int) -> np.ndarray:
 
 class Retina:
     def __init__(self, width: int = 96, height: int = 72, grid: tuple[int, int] = (6, 8), flow_gain: float = 1.2,
-                 loom_gain: float = 5.0, blur: int = 1, loom_floor: float = 0.05):
+                 loom_gain: float = 5.0, blur: int = 1, loom_floor: float = 0.05,
+                 loom_fov_frac: float = 1.0):
         self.w, self.h = int(width) // 2 * 2, int(height)
         self.rows, self.cols = int(grid[0]), int(grid[1])
         self.flow_gain = float(flow_gain)
         self.loom_gain = float(loom_gain)
         self.loom_floor = float(loom_floor)
         self.blur = int(blur)
+        # Fraction of the field width the looming *trigger* reads (1.0 = full width,
+        # 0.3 = central 30 %). Peripheral flow - walls sliding past during a cruise -
+        # inflates the full-width expansion slope and fires the reflex far too early;
+        # reading only the centre cuts those false triggers. The escape *direction*
+        # (nearL / nearR) still reads the full half-eye, so once triggered the drone
+        # still knows which way to turn.
+        self.loom_fov_frac = min(1.0, max(0.1, float(loom_fov_frac)))
         self.prev: np.ndarray | None = None
         self.prev_exp = {"L": 0.0, "R": 0.0}
         self._loom_ema: float | None = None
+        self._flow: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
 
     @classmethod
     def from_config(cls, cfg: dict) -> Retina:
         v = cfg.get("vision", {})
         return cls(v.get("width", 96), v.get("height", 72), tuple(v.get("grid", (6, 8))), v.get("flow_gain", 1.2),
-                   v.get("loom_gain", 5.0), v.get("blur", 1), v.get("loom_floor", 0.05))
+                   v.get("loom_gain", 5.0), v.get("blur", 1), v.get("loom_floor", 0.05),
+                   v.get("loom_fov_frac", 1.0))
 
     def reset(self) -> None:
         self.prev = None
         self._loom_ema = None
+        self._flow = None
 
     def encode(self, frame: np.ndarray | None) -> VisualFrame:
         if frame is None:
@@ -127,9 +145,17 @@ class Retina:
         # Looming = expansion of the flow field. Fit vx = a + ex*x and vy = b + ey*y
         # (texture-weighted least squares). Rotation only shifts (a), climbing only
         # stretches one axis, an approaching object stretches both: loom = min(ex, ey).
-        exp_all = _expansion(vx, vy, texture)
+        #
+        # ``exp_all`` (the trigger) reads only the central ``loom_fov_frac`` of the field, so
+        # flow at the periphery - a wall sliding past during a cruise - does not inflate the
+        # expansion slope and fire the reflex early. ``exp_l`` / ``exp_r`` stay full-width:
+        # they feed the L/R split (which eye gets the reflex), not the trigger.
+        margin = round(ncols * (1.0 - self.loom_fov_frac) / 2)
+        exp_all = _expansion(vx[:, margin: ncols - margin], vy[:, margin: ncols - margin],
+                             texture[:, margin: ncols - margin])
         exp_l = _expansion(vx[:, : self.cols], vy[:, : self.cols], texture[:, : self.cols])
         exp_r = _expansion(vx[:, self.cols :], vy[:, self.cols :], texture[:, self.cols :])
+        self._flow = (vx, vy, texture)  # handed to VisualFrame below; read by the escape picker
         self._loom_ema = exp_all if self._loom_ema is None else 0.5 * self._loom_ema + 0.5 * exp_all
         loom_level = float(np.clip((self._loom_ema - self.loom_floor) * self.loom_gain, 0, 1))
         side_l = float(np.clip(0.5 + (exp_l - exp_r) * 2.0, 0.0, 1.0))
@@ -156,7 +182,8 @@ class Retina:
         exp_total = float(self._loom_ema)
         rot_total = float(vx.mean())
         vert_total = float(-vy.mean())
-        return VisualFrame(eyes, expansion=exp_total, rotation=rot_total, vertical=vert_total)
+        return VisualFrame(eyes, expansion=exp_total, rotation=rot_total, vertical=vert_total,
+                           vx=vx, vy=vy, tex=texture)
 
 
 def _expansion(vx: np.ndarray, vy: np.ndarray, w: np.ndarray) -> float:

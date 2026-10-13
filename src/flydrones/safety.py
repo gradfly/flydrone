@@ -23,8 +23,16 @@ class Telemetry:
     yaw_rate_dps: float = 0.0
     x_m: float | None = None
     y_m: float | None = None
+    # Horizontal ground speed (m/s). The looming signal is proportional to V / Z, so the
+    # escape threshold is scaled by speed / v_ref to keep the trigger distance roughly
+    # constant across speeds (see MotorDecoder.update). None = not estimated.
+    speed: float | None = None
     battery_pct: float | None = None
     flying: bool = False
+    # True while the airframe is pressed against something. A drone in that state sees a
+    # *static* image, so there is no optic flow and the looming reflex can never fire -
+    # this flag is the second, non-visual trigger for the same escape (see decoder.py).
+    touching: bool = False
 
 
 class SafetyGovernor:

@@ -1,5 +1,6 @@
 from .base import Drone, DryRunDrone
-from .sim import Box, Room, SimDrone
+from .serial_link import SerialDrone
+from .sim import OBSTACLE_COUNT, Box, Room, SimDrone, make_obstacles
 
 
 def make_drone(kind: str, **kw) -> Drone:
@@ -22,7 +23,12 @@ def make_drone(kind: str, **kw) -> Drone:
         from .udp_bridge import UDPBridgeDrone
 
         return UDPBridgeDrone(**kw)
+    if kind in ("serial", "uart", "usb"):
+        from .serial_link import SerialDrone
+
+        return SerialDrone(**kw)
     raise ValueError(f"unknown drone backend: {kind}")
 
 
-__all__ = ["Box", "Drone", "DryRunDrone", "Room", "SimDrone", "make_drone"]
+__all__ = ["Box", "Drone", "DryRunDrone", "OBSTACLE_COUNT", "Room", "SerialDrone", "SimDrone",
+           "make_drone", "make_obstacles"]
