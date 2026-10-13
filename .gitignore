@@ -19,3 +19,6 @@ Thumbs.db
 .idea/
 .vscode/
 .git-backup-cleanup/
+camera_probe*.png
+camera_test_log.json
+.workbuddy/*.png
