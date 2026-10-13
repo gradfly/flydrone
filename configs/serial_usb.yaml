@@ -1,0 +1,71 @@
+# Real drone via USB: analog/UVC camera in, 4-byte stick frames out on a USB serial port.
+#
+#   flydrones camera                                                     # find the capture device
+#   flydrones fly --drone serial --camera 1 --port COM5 --live           # bench test (no arming)
+#   flydrones fly --drone serial --camera 1 --port COM5 --live --send    # fly
+#
+# The serial default is --input autoplay: the drone's own camera is the ONLY eye.
+# No hand gestures - the brain cruises (decoder.cruise) and dodges whatever looms.
+#
+# PROPS OFF for the first bench test. See docs/HARDWARE.md ("USB camera + USB serial").
+control:
+  hz: 20                   # 20 frames/s over the serial link, 50 ms per brain step
+
+camera:
+  index: "1"               # whatever `flydrones camera` reported
+  width: 640               # the video downlink is 640x480
+  height: 480
+  fps: 30
+  mjpg: true
+  mirror: false
+  backend: dshow
+
+serial:
+  port: COM5
+  baud: 115200
+  scale: 120
+  arm_after_s: 0.0
+  telemetry: false
+
+# Autopilot. A capture card and analog video are noisier than the simulator:
+# smooth more, keep the cruise modest, and let looming on the real feed drive
+# the giant-fiber escapes. At rest the wire shows forward ~= cruise * scale.
+vision:
+  blur: 2
+  flow_gain: 1.6
+  loom_gain: 10.0          # never escapes near a wall -> raise; escapes in open space -> lower
+  loom_floor: 0.15         # analog noise floor (browser demo runs 0.08-0.15 on a clean feed)
+  loom_fov_frac: 0.3       # the trigger reads only the central 30 % of the width
+
+decoder:
+  smoothing: 0.25
+  deadzone: 0.1
+  settle_s: 2.0
+  cruise: 0.35             # autoplay: constant forward drive the brain brakes and steers
+  escape:
+    terms: [DNp01_L, DNp01_R]
+    threshold_hz: 20
+    v_ref: 0.8             # speed-adaptive threshold reference (~ the cruise speed)
+    # The escape DIRECTION is read off the retina, not picked at random (motor/escape.py):
+    # whichever half of the eye is swelling harder decides, and the fly turns away from it.
+    # Both halves alike = head-on, which is a 180 deg about-face (not a climb).
+    duration_s: 0.7        # how long a turn is held
+    strength: 0.8
+    yaw_rate_dps: 120      # your airframe's max yaw rate; the about-face hold is derived from it
+    turn180_hold_s: null   # null = derive (~ pi / yaw_rate_dps + tau); set a number to pin it
+    climb_hold_s: 1.2      # a no-cue fallback climb keeps flying forward this long
+    climb_retrig_s: 0.3    # shortest gap between two picks inside one climb
+    side_min: 0.01         # mean depth-rate below this = static image = no cue (a bump)
+    side_close_frac: 0.10  # |left-right| under 10 % of (left+right) = "both halves alike"
+    pick_p: {climb: 0.10, left: 0.45}  # no-cue random fallback (a bump / dead camera)
+    contact_s: 0.9         # after a bump, ignore the next contact this long (anti-twitch)
+    cruise_floor: 0.4      # never let the looming brake zero the cruise (a fly slows, never stops)
+    ceil_alt: 1.6          # stop gaining height in a fallback climb above this (None = no clamp)
+
+safety:
+  max_throttle: 0.3        # start low; raise once the bench test looks sane
+  max_yaw: 0.45
+  max_forward: 0.5         # must exceed decoder.cruise or the cruise is clamped away
+  max_lateral: 0.2
+  slew_per_s: 1.5
+  brain_timeout_s: 0.5

@@ -9,4 +9,5 @@ safety:
   max_lateral: 0.2
   slew_per_s: 1.5
 decoder:
-  smoothing: 0.15
+  smoothing: 0.25
+  deadzone: 0.1

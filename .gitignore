@@ -18,3 +18,4 @@ flight*.csv
 Thumbs.db
 .idea/
 .vscode/
+.git-backup-cleanup/

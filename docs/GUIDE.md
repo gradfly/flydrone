@@ -11,6 +11,7 @@ This is the long version of the README, step by step, from zero to a drone in th
 - [5. Calibrate the read-out](#5-calibrate-the-read-out)
 - [6. Pick a drone](#6-pick-a-drone)
 - [7. First real flight (Tello)](#7-first-real-flight-tello)
+- [7b. Your own drone: USB camera in, USB serial out](#7b-your-own-drone-usb-camera-in-usb-serial-out)
 - [8. Record a video for social media](#8-record-a-video-for-social-media)
 - [9. Tuning cheat-sheet](#9-tuning-cheat-sheet)
 
@@ -51,6 +52,7 @@ source .venv/bin/activate
 .venv\Scripts\Activate.ps1
 
 pip install -e ".[vision]"         # core + OpenCV window
+pip install -e ".[serial]"         # + pyserial, for the USB serial drone link
 pip install -e ".[all,dev]"        # everything: gestures, data, all drones, tests
 ```
 
@@ -139,16 +141,18 @@ and re-run `inspect`.
 
 ## 6. Pick a drone
 
-| | Tello | Crazyflie 2.1 + Flow deck | ArduPilot / PX4 | Betaflight + ESP32 |
-|---|---|---|---|---|
-| price (approx.) | low | medium | medium-high | low-medium |
-| camera for the fly | yes (Wi-Fi video) | no (use webcam hand) | optional | no (use webcam hand) |
-| altitude hold | yes | yes | yes | no (angle mode only) |
-| difficulty | easiest | easy | medium | hardest |
-| indoor safe | yes, with guards | yes | no, outdoors | cage / net |
+| | Tello | Crazyflie 2.1 + Flow deck | ArduPilot / PX4 | Betaflight + ESP32 | Your FC + USB camera |
+|---|---|---|---|---|---|
+| price (approx.) | low | medium | medium-high | low-medium | whatever you already have |
+| camera for the fly | yes (Wi-Fi video) | no (use webcam hand) | optional | no (use webcam hand) | **yes, the real drone camera (UVC)** |
+| altitude hold | yes | yes | yes | no (angle mode only) | depends on the FC |
+| difficulty | easiest | easy | medium | hardest | medium (you write the receiver) |
+| indoor safe | yes, with guards | yes | no, outdoors | cage / net | depends on the FC |
 
-Start with **Tello** if you want the "camera → fly eyes" story, or **Crazyflie** for the smallest, safest
-indoor drone. Full setup for each: [HARDWARE.md](HARDWARE.md).
+Start with **Tello** if you want the "camera → fly eyes" story without hardware hacking, or
+**[your own FC + USB camera](#7b-your-own-drone-usb-camera-in-usb-serial-out)** if you already have a drone
+with a video downlink and want the fly to actually see what it sees. Full setup for each:
+[HARDWARE.md](HARDWARE.md).
 
 ## 7. First real flight (Tello)
 
@@ -164,6 +168,61 @@ indoor drone. Full setup for each: [HARDWARE.md](HARDWARE.md).
 7. Hand gestures in front of the laptop webcam: open palm → climb, fist → hold, drop hand → descend.
 8. **Ctrl+C** or `q` in the window lands. Low battery, 3 minutes, or a brain stall also land or hover.
 
+## 7b. Your own drone: USB camera in, USB serial out
+
+This is the setup where the fly really uses its own eyes. The drone's video downlink goes into a USB UVC
+capture device on the laptop, and the brain's three stick values go back out on a USB serial port:
+
+```
+drone camera ──downlink──► USB UVC capture ─┐
+                                             ├─ laptop: fly brain
+flight controller ◄── USB serial, 4 B @ 20 Hz ┘
+```
+
+It flies in **autoplay**: `--input autoplay` is the default for `--drone serial` — the drone camera is
+the only eye, a constant `decoder.cruise` keeps it moving forward, and looming on the real feed triggers
+the escape reflex. There are no hand gestures in this mode.
+
+```bash
+pip install -e ".[serial,vision]"
+
+flydrones camera --probe 1              # check camera_probe.png: is it the drone's view?
+```
+
+Bench test with **props off** - this mode writes real frames but arms nothing:
+
+```bash
+flydrones fly --drone serial --camera 1 --port COM5 --config configs/serial_usb.yaml --live
+```
+
+Then fly:
+
+```bash
+flydrones fly --drone serial --camera 1 --port COM5 --config configs/serial_usb.yaml --live --send
+```
+
+What goes down the wire, 20 times a second:
+
+```
+0xAA  <throttle>  <yaw>  <forward>        signed bytes, each -120..+120
+```
+
+The three values are two's complement, so −120 is `0x88` on the wire. Your receiver must decode **by
+position** (always exactly 4 bytes after a header), because `0xAA` is itself a legal value (−86).
+And it **must** have an RX-loss failsafe: 300 ms without a valid frame → cut throttle or land.
+
+No drone to test against yet? Make a virtual serial pair and run the reference receiver:
+
+```bash
+socat -d -d pty,raw,echo=0 pty,raw,echo=0          # Windows: com0com gives you COM10/COM11
+python tools/uart_loopback_sim.py --port COM11     # terminal 1: the "flight controller"
+flydrones fly --drone serial --port COM10 --camera 1   # terminal 2: the brain
+```
+
+`tools/uart_stream_test.py` measures the link (fps, jitter, dropouts) and
+`tools/serial_monitor.py COM5 --decode` shows the raw bytes. Byte-level detail, the exact protocol
+contract, wiring and troubleshooting: [HARDWARE.md](HARDWARE.md#usb-camera-in-usb-serial-out-your-own-flight-controller).
+
 ## 8. Record a video for social media
 
 - Screen-record the `--live` dashboard and film the drone with a phone at the same time. Put them side by side.
@@ -178,7 +237,19 @@ indoor drone. Full setup for each: [HARDWARE.md](HARDWARE.md).
 | drone drifts up / down at rest | `decoder.settle_s` longer, or `brain.bias` for DNg02 |
 | climbs too fast with open palm | `decoder.axes.throttle.gain` lower, `safety.max_throttle` lower |
 | yaw wobbles | `decoder.smoothing` lower, `decoder.axes.yaw.gain` lower, `imu.yaw_saturation_dps` higher |
-| escapes too often | `decoder.escape.threshold_hz` higher, `vision.loom_floor` higher |
+| escapes too often | `decoder.escape.threshold_hz` higher, `vision.loom_floor` higher, `vision.loom_fov_frac` lower |
 | never escapes | `vision.loom_gain` higher, `inputs.LPLC2_*.max_hz` higher |
 | optic flow too noisy (real camera) | `vision.blur` 2, `vision.flow_gain` higher |
+| autoplay never moves forward | `decoder.cruise` (0.35 in `configs/serial_usb.yaml`), and `safety.max_forward` must exceed it |
+| never escapes near obstacles | `vision.loom_gain` higher, `vision.loom_floor` lower, `decoder.escape.threshold_hz` lower |
+| turns the wrong way / still random | `decoder.escape.side_min` too high (no cue read) — the direction comes from the eye |
+| spins 180° too often | `decoder.escape.side_close_frac` lower, `threshold_hz` higher |
+| about-face over/under-rotates | `decoder.escape.yaw_rate_dps` correct, or pin `turn180_hold_s` |
+| climbs too often | `decoder.escape.pick_p.climb` lower (0.10) — `climb` is now only the no-cue fallback |
+| hangs mid-air after a scare | `decoder.escape.cruise_floor` higher (a fly slows, never stops dead) |
+| twitches non-stop on a wall | `decoder.escape.contact_s` higher |
+| captures card delivers 5-10 fps | `camera.mjpg: true`, then `camera.buffer_size: 1` |
+| `flydrones camera --probe` shows the room, not the drone | wrong `--camera` index |
+| drone reacts to nothing / values look random | receiver is scanning for `0xAA` instead of decoding 4 bytes by position |
+| drone twitches the moment you connect | FC reset by DTR/RTS, or two apps hold the port |
 | brain slower than real time | `build-brain --core-hops 3`, `brain.lif.dt` 1.0, fewer `record_neurons` |

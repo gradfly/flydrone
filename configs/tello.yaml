@@ -4,7 +4,8 @@ control:
   hz: 20
 vision:
   flow_gain: 2.0          # 720p Tello video is noisier than the simulator
-  loom_gain: 6.0
+  loom_gain: 10.0
+  loom_fov_frac: 0.3      # the trigger reads only the central 30 % of the width
 safety:
   max_throttle: 0.5
   max_yaw: 0.5

@@ -21,6 +21,20 @@ Each copy flies one drone. A real swarm would also need drone-to-drone collision
 
 **Windows?**
 Yes. Use `.venv\Scripts\activate`, Tello over Wi-Fi works, Crazyradio needs the Zadig USB driver.
+For the `serial` backend, use `--cam-backend dshow` for the capture card and pass the port by name
+(`COM5`). If two cameras share an index, pass the DirectShow name instead: `--camera "USB Video"`.
+`list_ports` sometimes refuses to enumerate inside a sandboxed shell - open the port directly instead.
+
+**Can I use the drone's own camera as the fly's eyes?**
+Yes, that is the `serial` backend. The downlink goes into a USB UVC capture device (640×480), the brain
+reads it as `--camera`, and the three stick values go out on a serial port as 4 bytes at 20 Hz. See
+[HARDWARE.md](HARDWARE.md#usb-camera-in-usb-serial-out-your-own-flight-controller).
+
+**The drone does not respond, or responds to something random. What is wrong?**
+Almost always the receiver, not the brain. Two classics: it is searching for `0xAA` as a delimiter
+instead of decoding exactly 4 bytes per frame (`0xAA` is also a legal value, −86), and it has no
+RX-loss failsafe so it holds the last command forever. Use `tools/uart_loopback_sim.py` as the
+reference receiver and `tools/serial_monitor.py --decode` to see what is really on the wire.
 
 **Can the brain run on the drone?**
 MiniFly or a small sensorimotor core can run on a Raspberry Pi class computer. Full MaleCNS needs a

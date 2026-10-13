@@ -121,7 +121,7 @@ No camera, drone or GPU needed for any of the above.
 | balance | **haltere** afferents | gyroscope organs | drone IMU yaw rate |
 | lift & steering | **DNg02** L/R | population that sets wing-stroke amplitude; left/right act independently ([Namiki et al. 2022](https://www.cell.com/current-biology/fulltext/S0960-9822(22)00019-7)) | throttle = L+R, yaw = R−L |
 | evasive turns | **DNp03** L/R | looming-evoked flight saccades ([Curr. Biol. 2025](https://www.cell.com/current-biology/fulltext/S0960-9822(25)01542-8)) | yaw away from the threat, brakes cruise |
-| escape | **DNp01** (giant fiber) | escape takeoff | short climb / drop / brake reflex |
+| escape | **DNp01** (giant fiber) | escape takeoff | direction read from the eye (which half is swelling): turn away, or a 180° about-face when it is coming head-on |
 
 The simulator is event-driven: each step only touches the synapses of neurons that actually spiked. Details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -143,12 +143,34 @@ Everything below is a **dry run** (commands printed, nothing sent) until you add
 
 | drone | install | run | notes |
 |---|---|---|---|
+| **Your own FC + USB camera** | `pip install -e ".[serial,vision]"` | `flydrones fly --drone serial --camera 1 --port COM5` | the drone's real camera is the fly's eyes; flies itself (autoplay); 4-byte stick frames at 20 Hz over USB serial |
 | **DJI / Ryze Tello** | `pip install -e ".[tello,gestures]"` | `flydrones fly --drone tello --input both --live` | easiest start; its camera becomes the fly's eyes |
 | **Crazyflie 2.x + Flow deck** | `pip install -e ".[crazyflie,gestures]"` | `flydrones fly --drone crazyflie --input gesture` | 27 g; webcam hand as the eyes |
 | **ArduPilot / PX4** (real or SITL) | `pip install -e ".[mavlink]"` | `flydrones fly --drone mavlink --mavlink udpin:0.0.0.0:14550` | GUIDED / OFFBOARD velocity setpoints |
 | **Betaflight / INAV quad** | flash [`firmware/esp32_msp_bridge`](firmware/esp32_msp_bridge) | `flydrones fly --drone esp32 --input gesture` | ESP32 Wi-Fi → MSP RC override |
 
 Setup and wiring for each drone: [docs/HARDWARE.md](docs/HARDWARE.md). Step-by-step guide: [docs/GUIDE.md](docs/GUIDE.md).
+
+### The USB camera → USB serial link
+
+For the "camera downlink into a capture card, flight controller on a serial port" setup. The brain sends
+**4 bytes, 20 times a second**:
+
+```
+0xAA  <throttle>  <yaw>  <forward>       signed bytes, -120..+120
+```
+
+```bash
+pip install -e ".[serial,vision]"
+flydrones camera --probe 1                          # is this the drone's view?
+flydrones fly --drone serial --camera 1 --port COM5 --live            # bench test, nothing armed
+flydrones fly --drone serial --camera 1 --port COM5 --live --send     # fly
+```
+
+`--drone serial` is the one backend that writes real frames without `--send`, so a receiver can be tested
+with no drone present. No drone either? `tools/uart_loopback_sim.py` and `tools/uart_stream_test.py` speak
+the protocol on the other side of a virtual serial pair. Full protocol, wiring and troubleshooting:
+[HARDWARE.md](docs/HARDWARE.md#usb-camera-in-usb-serial-out-your-own-flight-controller).
 
 ## Use the real connectome
 
@@ -191,9 +213,9 @@ A desktop CPU is faster. The control loop adapts `dt` to wall time and warns if 
 ```
 src/flydrones/
   brain/       connectome.py (MaleCNS loader, groups, subgraphs) · lif.py (simulator) · synthetic.py (MiniFly)
-  senses/      retina.py (optic flow, looming) · gestures.py (hand -> illusions) · encoder.py · webcam.py
+  eyes        retina.py (optic flow, looming) · gestures.py (hand -> illusions) · encoder.py · webcam.py (UVC capture)
   motor/       decoder.py (descending neurons -> commands) · command.py
-  drones/      sim.py · tello.py · crazyflie.py · mavlink.py · udp_bridge.py (ESP32/MSP)
+  drones/      sim.py · tello.py · crazyflie.py · mavlink.py · udp_bridge.py (ESP32/MSP) · serial_link.py (4-byte sticks)
   safety.py    limits, ceiling, floor, geofence, watchdog, battery
   runtime.py   the closed loop
   calibrate.py fit the read-out on your connectome
@@ -201,11 +223,11 @@ src/flydrones/
   cli.py       `flydrones ...`
 docs/index.html + docs/live/     the browser demo (three.js, JS port of the engine)
 firmware/esp32_msp_bridge/   Arduino sketch: UDP -> MSP_SET_RAW_RC
-configs/     tello, crazyflie, mavlink SITL, esp32, malecns
+configs/     tello, crazyflie, mavlink SITL, esp32, serial_usb, malecns
 docs/        GUIDE · HARDWARE · SCIENCE · ARCHITECTURE · CONNECTOME_DATA · SAFETY · FAQ
 examples/    small scripts to poke neurons, write your own decoder, replay a video
-tests/       pytest suite (simulator, retina, decoder, safety, protocol, MaleCNS loader)
-tools/       export the browser brain, check the JS engine against Python
+tests/       pytest suite (simulator, retina, decoder, safety, serial protocol, MaleCNS loader)
+tools/       uart_stream_test · serial_monitor · uart_loopback_sim · export the browser brain
 ```
 
 ## Safety
@@ -216,6 +238,7 @@ Drones cut fingers. The brain is a research model and can do unexpected things.
 - The safety governor clamps speed, fades out climbing near the ceiling, blocks descent below the floor, hovers if the brain stalls, lands on low battery or after `max_flight_s`.
 - **Ctrl+C lands.** Keep the vendor app or a second remote ready as a kill switch.
 - Props off for the first bench test. Fly indoors only with prop guards, over soft ground, away from people and pets.
+- On `--drone serial` the flight controller's own **RX-loss failsafe is the real safety net** — the 4-byte protocol has no heartbeat and the brain gets no telemetry. Test it before you fly.
 
 Read [docs/SAFETY.md](docs/SAFETY.md) before the first real flight.
 
