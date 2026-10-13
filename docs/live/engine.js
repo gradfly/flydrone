@@ -101,7 +101,7 @@ export class Brain {
 // ------------------------------------------------------------------ room + camera
 // Foam-block obstacles are dropped into the arena at random (seeded RNG, so the
 // simulator, the retina view and the 3D visuals always agree on the same layout).
-export const OBSTACLE_COUNT = 6; // how many boxes the arena holds (tune me)
+export const OBSTACLE_COUNT = 8; // how many boxes the arena holds (tune me)
 // Footprint is a fixed 0.5 m x 0.5 m (one floor mat tile); the lo corner snaps to the
 // 0.5 m mat grid, only the height varies (1.1..2.0 m).
 export function makeObstacles(seed = (Math.random() * 0xffffffff) >>> 0, count = OBSTACLE_COUNT) {
@@ -110,13 +110,14 @@ export function makeObstacles(seed = (Math.random() * 0xffffffff) >>> 0, count =
   const boxes = [];
   let guard = 0;
   while (boxes.length < count && guard++ < 5000) {
-    const lo = [-2.5 + Math.floor(rng() * 10) * 0.5, -2.5 + Math.floor(rng() * 10) * 0.5];
+    // lo ∈ [-2.0, 1.5], so a 0.5 m box stays ≥1 m from the ±3 m walls
+    const lo = [-2.0 + Math.floor(rng() * 8) * 0.5, -2.0 + Math.floor(rng() * 8) * 0.5];
     const hi = [lo[0] + 0.5, lo[1] + 0.5];
     const h = 1.1 + rng() * 0.9;
     // keep a launch pad clear around every pilot start position
     if (starts.some(([sx, sy]) => sx > lo[0] - 0.9 && sx < hi[0] + 0.9 && sy > lo[1] - 0.9 && sy < hi[1] + 0.9)) continue;
     // keep obstacles apart so the drone can slip between them
-    if (boxes.some((b) => lo[0] < b.hi[0] + 0.45 && hi[0] > b.lo[0] - 0.45 && lo[1] < b.hi[1] + 0.45 && hi[1] > b.lo[1] - 0.45)) continue;
+    if (boxes.some((b) => lo[0] < b.hi[0] + 0.8 && hi[0] > b.lo[0] - 0.8 && lo[1] < b.hi[1] + 0.8 && hi[1] > b.lo[1] - 0.8)) continue;
     boxes.push({ lo: [lo[0], lo[1], 0], hi: [hi[0], hi[1], h], shade: 0.16 + rng() * 0.14, name: `obstacle${boxes.length + 1}` });
   }
   return boxes;
@@ -153,7 +154,7 @@ export class RayCamera {
       const wall = (t, along, zz) => {
         if (t > 1e-6 && t < tb) {
           const stripe = (Math.floor(along / 0.3) % 2 + 2) % 2 * 0.35 + 0.35;
-          const band = ((Math.floor(zz / 0.45) % 2) + 2) % 2 === 0 ? 1.0 : 0.8;
+          const band = ((Math.floor(zz / 0.8) % 2) + 2) % 2 === 0 ? 1.0 : 0.8;
           tb = t; shade = stripe * band;
         }
       };
@@ -197,7 +198,14 @@ export class SimDrone {
     this.pos = [...start]; this.vel = [0, 0, 0];
     this.yaw = (yawDeg * Math.PI) / 180; this.yawRate = 0;
     this.vMax = 1.0; this.vzMax = 0.8; this.yrMax = (120 * Math.PI) / 180; this.tau = 0.35; this.wind = 0.03;
-    this.bounce = 0.45; // restitution on a wall / obstacle bump (0 = pure slide, 1 = full rebound)
+    this.bounce = 0.4; // restitution on a wall / obstacle bump (0 = pure slide, 1 = full rebound)
+    // Body-frame half-extents for collision (covers body + motors, not props). The old code used a
+    // uniform r = 0.1 m which is far smaller than the 3D model (body 0.26×0.15 m, motor span 0.47 m),
+    // so the drone visibly clipped through walls and obstacles. These half-extents are projected onto
+    // the world axes by yaw in collide() to form a yaw-aligned bounding box.
+    this.droneHalfX = 0.15; // forward (covers body 0.13 + motor 0.165 + motor radius 0.036)
+    this.droneHalfZ = 0.21; // lateral (covers motor 0.235 + motor radius 0.036)
+    this.droneHalfY = 0.05; // vertical (body is thin; legs/props are narrow enough to ignore)
     this.rng = mulberry32(seed + 99);
     this.cam = new RayCamera();
     this.cmd = { throttle: 0, yaw: 0, forward: 0, lateral: 0 };
@@ -230,7 +238,8 @@ export class SimDrone {
   send(cmd) { this.cmd = cmd; }
   telemetry() {
     return { t: this.t, alt: this.pos[2], x: this.pos[0], y: this.pos[1], yawDeg: ((this.yaw * 180) / Math.PI % 360 + 360) % 360,
-      yawRateDps: (-this.yawRate * 180) / Math.PI, battery: this.battery, flying: this.flying, touching: this.touching };
+      yawRateDps: (-this.yawRate * 180) / Math.PI, speed: Math.hypot(this.vel[0], this.vel[1]),
+      battery: this.battery, flying: this.flying, touching: this.touching };
   }
   frame() { return this.cam.render(this.room, this.pos, this.yaw); }
   step(dt) {
@@ -270,8 +279,17 @@ export class SimDrone {
     if (this.landing && this.pos[2] <= 0.02) { this.flying = false; this.pos[2] = 0; }
   }
   collide(p) {
-    const r = 0.1, room = this.room;
-    const hx = room.sx / 2 - r, hy = room.sy / 2 - r, hz = room.h - r;
+    const room = this.room;
+    // Project the drone's body-frame OBB onto world axes. The drone yaws in the X-Y plane: forward =
+    // [cos(yaw), sin(yaw)], lateral = [sin(yaw), -cos(yaw)]. The world-space AABB half-extents are the
+    // sum of each body half-extent weighted by |cos| / |sin| of the yaw. This rotates the collision
+    // boundary with the drone, so a head-on wall hit stops the nose (not just a 0.1 m sphere at the
+    // centre) and a side-on hit stops the motor tips.
+    const ca = Math.abs(Math.cos(this.yaw)), sa = Math.abs(Math.sin(this.yaw));
+    const hWX = this.droneHalfX * ca + this.droneHalfZ * sa; // world X half-extent
+    const hWY = this.droneHalfX * sa + this.droneHalfZ * ca; // world Y half-extent
+    const hWZ = this.droneHalfY;                             // vertical (no yaw rotation)
+    const hx = room.sx / 2 - hWX, hy = room.sy / 2 - hWY, hz = room.h - hWZ;
     const q = [clamp(p[0], -hx, hx), clamp(p[1], -hy, hy), clamp(p[2], 0, hz)];
     const n = [0, 0, 0];
     if (p[0] > hx) n[0] = -1; else if (p[0] < -hx) n[0] = 1;
@@ -286,7 +304,7 @@ export class SimDrone {
       let moved = false;
       for (const b of room.boxes) {
         if (b.solid === false) continue;
-        const x0 = b.lo[0] - r, x1 = b.hi[0] + r, y0 = b.lo[1] - r, y1 = b.hi[1] + r, z0 = b.lo[2] - r, z1 = b.hi[2] + r;
+        const x0 = b.lo[0] - hWX, x1 = b.hi[0] + hWX, y0 = b.lo[1] - hWY, y1 = b.hi[1] + hWY, z0 = b.lo[2] - hWZ, z1 = b.hi[2] + hWZ;
         if (!(q[0] > x0 && q[0] < x1 && q[1] > y0 && q[1] < y1 && q[2] > z0 && q[2] < z1)) continue;
         hit = moved = true;
         const eps = 1e-4;
@@ -330,6 +348,11 @@ export class Retina {
     const v = cfg.vision;
     this.w = v.width; this.h = v.height; this.rows = v.grid[0]; this.cols = v.grid[1];
     this.flowGain = v.flow_gain; this.loomGain = v.loom_gain; this.loomFloor = v.loom_floor; this.blurR = v.blur;
+    // Fraction of the field width the looming trigger reads (1.0 = full width, 0.5 = central 50 %).
+    // Peripheral flow (walls sliding by during cruise) inflates the full-width expansion slope and
+    // fires the reflex too early; reading only the centre cuts those false triggers without affecting
+    // the escape direction, which still reads the full half-eye (nearL / nearR in escFromEye).
+    this.loomFovFrac = Number.isFinite(v.loom_fov_frac) ? clamp(v.loom_fov_frac, 0.1, 1.0) : 1.0;
     this.prev = null; this.prevExp = { L: 0, R: 0 }; this.loomEma = null;
     this.nearL = null; this.nearR = null; this.nearAll = null; // depth-rate per half, for the escape direction
   }
@@ -377,7 +400,10 @@ export class Retina {
       vx[k] = clamp(vx[k], -3, 3) * tex[k]; vy[k] = clamp(vy[k], -3, 3) * tex[k];
     }
     const expansion = (c0, c1) => Math.min(weightedSlope(vx, tex, rows, ncols, c0, c1, "x"), weightedSlope(vy, tex, rows, ncols, c0, c1, "y"));
-    const expAll = expansion(0, ncols), expL = expansion(0, cols), expR = expansion(cols, ncols);
+    // expAll reads only the central loomFovFrac of the field (e.g. 50 %) so peripheral flow does not
+    // inflate the expansion slope. expL / expR stay full-width — they feed the L/R split, not the trigger.
+    const _fovMargin = Math.round(ncols * (1 - this.loomFovFrac) / 2);
+    const expAll = expansion(_fovMargin, ncols - _fovMargin), expL = expansion(0, cols), expR = expansion(cols, ncols);
     // expL / expR split the looming across the two eyes (which eye gets the reflex), but they cannot
     // say *where* the looming object is: they are affine slopes fitted over a whole half of the eye,
     // and for any smooth expansion field those two slopes come out nearly equal — verified against the
@@ -514,6 +540,14 @@ export class Decoder {
     this.axes = d.axes; this.cruise = d.cruise; this.brakeTerms = d.brake_terms;
     this.cruiseFloor = 0; // min fraction of cruise kept while the looming brake is on (see update())
     this.esc = d.escape;
+    // Speed-adaptive looming threshold: the looming signal (expansion rate) is proportional to V/Z,
+    // so a fixed threshold triggers at very different distances depending on speed. Scaling the
+    // threshold by speed/vRef makes the trigger distance roughly constant across speeds.
+    //   speed > vRef  -> threshold rises  -> triggers later (closer to the obstacle)
+    //   speed < vRef  -> threshold drops  -> triggers earlier (not too late at low speed)
+    // Clamped to [0.3, 3.0] × vRef so a standstill does not fire on noise and a burst does not
+    // make the reflex unreachable. vRef ≈ cruise speed (≈ 0.5 m/s in autoplay).
+    this.escVRef = (d.escape && Number.isFinite(d.escape.v_ref)) ? d.escape.v_ref : 0.8;
     this.baseline = null; this.sum = {}; this.nSettle = 0; this.elapsed = 0;
     this.state = { throttle: 0, yaw: 0, forward: 0, lateral: 0 };
     this.escUntil = -1; this.gf = 0; this.brake = 0; this.escapes = 0; this.escPick = null; this.escCause = "loom";
@@ -522,29 +556,32 @@ export class Decoder {
     //   left half swelling harder  -> turn RIGHT (away from it)
     //   right half swelling harder -> turn LEFT
     //   both halves swelling alike -> the thing is coming head-on, there is no side to pick, so the
-    //                                 escape becomes a climb held for escClimbHold seconds (1.5 s),
-    //                                 but only escClimbP of the time — the climb is by far the most
-    //                                 expensive reflex (1.5 s of gaining height instead of dodging), and
-    //                                 a head-on loom is common enough that climbing on every one of them
-    //                                 turned the flight into a yo-yo. A head-on read that does not climb
-    //                                 is spent as a turn towards the marginally harder-swelling half.
+    //                                 escape becomes a 180° about-face (escTurn180Hold seconds of full
+    //                                 yaw) — the drone turns around and flies back the way it came.
+    //                                 A head-on loom used to trigger a climb, but climbing on every
+    //                                 head-on turned the flight into a yo-yo and gained altitude that
+    //                                 the governor then had to undo. Turning 180° is a pure dodge with
+    //                                 no altitude side-effect.
     // escP only survives as the fallback for when there is nothing to read at all — a bump against a
     // surface gives a *static* image, hence zero expansion, and a random turn off the wall is what
     // unsticks the drone. escSideMin is a depth-rate floor (static image detector);
     // escSideCloseFrac makes "the two sides are alike" scale with how hard the looming is.
     this.escP = { climb: 0.10, left: 0.45 }; this.escCeilAlt = null;
     this.escSideMin = 0.01;  // mean depth-rate below this = the image is not moving = no cue at all
-    this.escSideCloseFrac = 0.20; // |left - right| below 20 % of (left + right) = "both sides alike"
-    this.escClimbP = 0.35;   // chance a head-on read really climbs; the other 65 % turn instead
-    this.escClimbHold = 1.5;  // s, how long a head-on (no-side) climb is held (it keeps cruising)
+    this.escSideCloseFrac = 0.10; // |left - right| below 10 % of (left + right) = "both sides alike"
+    this.escClimbHold = 1.5;  // s, how long a no-cue fallback climb is held (it keeps cruising)
     this.escClimbRetrig = 0.3; // s, shortest gap between two looming picks inside one climb
     this.escRetrigUntil = 0;  // s, when the running climb may be interrupted by a new looming
     this.escRetrig = 0;       // how many escapes were re-picked inside a running climb
+    // 180° about-face: hold full yaw until the drone has swung π rad. SimDrone yaw is a first-order
+    // lag (tau = 0.35 s) on yrMax, so the hold time ≈ π / yrMax + tau. The engine default yrMax is
+    // 120 °/s (≈ 2.094 rad/s) → 1.85 s; applyAutoTune overrides this for 180 °/s → 1.35 s.
+    this.escTurn180Hold = 1.85;  // s, duration of the 180° about-face at the default yaw rate
+    this.escTurn180Dir = 1;      // yaw sign for the current about-face (+1 = right, -1 = left)
     this.sideEma = 0; this.totEma = 0;
     // which reflex each escape turned into (readable from the page via FD.state().escHist) + the
-    // eye reading that picked it, so a run can be audited instead of guessed at. climbDown counts the
-    // head-on reads that escClimbP turned into a turn, i.e. "how many climbs the gate removed".
-    this.escHist = { left: 0, right: 0, climb: 0, nocue: 0, climbDown: 0 };
+    // eye reading that picked it, so a run can be audited instead of guessed at.
+    this.escHist = { left: 0, right: 0, climb: 0, turn180: 0, nocue: 0 };
     this.escEye = null;
     this.contactUntil = -1;
     // Retry gap while the drone is *still* on a surface. It used to be 2 s, which is a long time to
@@ -560,9 +597,9 @@ export class Decoder {
   // right half of the eye, i.e. how close the closest surface on that side is. Image column 0 is the
   // drone's left (RayCamera: dx = forward + U * right, U = -1 at column 0), so the half that is being
   // rushed at swells harder and the fly turns away from it. Both halves swelling alike means the
-  // object is coming straight at it — no side to pick, so the escape *may* become a held climb, gated
-  // by escClimbP (see the picker in update()).
-  // Returns "left" | "right" | "climb" | null (null = no visual information, use the escP mix).
+  // object is coming straight at it — no side to pick, so the escape becomes a 180° about-face
+  // (escTurn180Hold seconds of full yaw, direction from the marginal sign of sideEma or random).
+  // Returns "left" | "right" | "turn180" | null (null = no visual information, use the escP mix).
   escFromEye(v) {
     const L = v && Number.isFinite(v.nearL) ? v.nearL : 0, R = v && Number.isFinite(v.nearR) ? v.nearR : 0;
     // Short EMAs: the per-frame divergence figures are noisy and the pick happens only once per escape.
@@ -574,7 +611,7 @@ export class Decoder {
     if (flow < this.escSideMin || this.totEma <= 0) return null;
     // "Both halves alike" is a *relative* test now: the divergence scale moves with speed and distance.
     const close = (this.escSideCloseFrac || 0.2) * this.totEma;
-    if (Math.abs(this.sideEma) < close) return "climb";              // both halves -> head-on, climb
+    if (Math.abs(this.sideEma) < close) return "turn180";            // both halves -> head-on, about-face
     return this.sideEma > 0 ? "right" : "left";                      // turn away from the swelling half
   }
   update(rates, dt, tel = null, vision = null) {
@@ -616,14 +653,20 @@ export class Decoder {
     // and with no optic flow there is no expansion, so the looming reflex can never fire. It is
     // rate-limited so a long slide along a wall does not turn into non-stop twitching.
     const contactReady = !!(tel && tel.touching) && this.elapsed > this.contactUntil;
-    const eye = this.escFromEye(vision); // "left" | "right" | "climb" | null (read every frame, so the EMA has history when the escape fires)
-    // A climb no longer freezes the drone: it keeps flying forward for the whole hold, so a *new* loom
-    // can develop while it is still climbing, and that new loom is allowed to interrupt it (a fresh
-    // direction then takes over). Rate-limited, otherwise a rate that simply stays above the threshold
-    // would re-pick on every single frame.
+    const eye = this.escFromEye(vision); // "left" | "right" | "turn180" | null (read every frame, so the EMA has history when the escape fires)
+    // A no-cue fallback climb no longer freezes the drone: it keeps flying forward for the whole hold,
+    // so a *new* loom can develop while it is still climbing, and that new loom is allowed to interrupt
+    // it (a fresh direction then takes over). Rate-limited, otherwise a rate that simply stays above
+    // the threshold would re-pick on every single frame.
     const climbing = this.escPick === "climb" && this.elapsed <= this.escUntil;
     const retrigger = climbing && this.elapsed > this.escRetrigUntil;
-    if ((this.gf >= this.esc.threshold_hz || contactReady) && (this.elapsed > this.escUntil || retrigger)) {
+    // Speed-adaptive threshold: the looming signal ∝ V/Z, so scaling the threshold by speed/vRef
+    // keeps the trigger distance roughly constant across speeds (see escVRef in the constructor).
+    // tel is null during warmup — treat that as vRef so the threshold stays at its base value.
+    const speed = tel && Number.isFinite(tel.speed) ? tel.speed : this.escVRef;
+    const speedRatio = clamp(speed / this.escVRef, 0.3, 3.0);
+    const thresholdEff = this.esc.threshold_hz * speedRatio;
+    if ((this.gf >= thresholdEff || contactReady) && (this.elapsed > this.escUntil || retrigger)) {
       if (contactReady) this.contactUntil = this.elapsed + this.contactCooldown;
       this.escCause = contactReady ? "contact" : "loom";
       // A contact escape also gets a physical shove off the surface — a turn alone leaves the drone
@@ -638,30 +681,34 @@ export class Decoder {
       const pLeft = Number.isFinite(this.escP && this.escP.left) ? this.escP.left : 0.45;
       const climbHold = Number.isFinite(this.escClimbHold) ? this.escClimbHold : 1.5;
       this.escEye = eye;
-      if (aboveCeil) {
-        // Never climb into the ceiling: a head-on read is downgraded to a turn here.
-        this.escPick = eye && eye !== "climb" ? eye : Math.random() < 0.5 ? "left" : "right";
-      } else if (eye) {
+      if (eye) {
         // The whole point of the eye read: the reflex is now a lookup, not a lottery. Whichever half
         // of the retina is swelling harder decides, and the same geometry always picks the same side.
-        // The one exception is the head-on read ("climb"): it is only taken escClimbP of the time, and
-        // otherwise spent as a turn towards the marginally harder-swelling half (the sign of sideEma,
-        // which is small but real). Fewer climbs = less yo-yoing: a climb is 1.5 s of climbing instead
-        // of dodging, and a head-on loom is too common to afford on every single one.
-        const pClimbOK = Number.isFinite(this.escClimbP) ? this.escClimbP : 0.35;
-        if (eye === "climb" && Math.random() >= pClimbOK) {
-          this.escPick = this.sideEma >= 0 ? "right" : "left";
-          this.escHist.climbDown++;
-        } else this.escPick = eye;
+        // A head-on read (both halves alike) is a 180° about-face: no side to pick, so the drone turns
+        // around and flies back. The about-face direction comes from the marginal sign of sideEma
+        // (small but real), or random if sideEma is truly zero. A turn180 does not climb, so the
+        // ceiling check is irrelevant for the eye path.
+        this.escPick = eye;
+        if (eye === "turn180") {
+          this.escTurn180Dir = Math.abs(this.sideEma) > 1e-6
+            ? (this.sideEma >= 0 ? 1 : -1)
+            : (Math.random() < 0.5 ? -1 : 1);
+        }
+      } else if (aboveCeil && r < pClimb) {
+        // No visual cue + above ceiling: the escP climb fallback is downgraded to a turn.
+        this.escPick = Math.random() < 0.5 ? "left" : "right";
       } else if (r < pClimb) this.escPick = "climb";
       else if (r < pClimb + pLeft) this.escPick = "left";
       else this.escPick = "right";
       if (!eye) this.escHist.nocue++;                       // blind escape: contact bump / dead vision
       this.escHist[this.escPick] = (this.escHist[this.escPick] || 0) + 1;
-      // A head-on climb is held for escClimbHold (1.5 s); the turns keep the config's duration_s.
+      // A no-cue climb is held for climbHold; a 180° about-face for escTurn180Hold; turns for duration_s.
       if (this.escPick === "climb") {
         this.escUntil = this.elapsed + climbHold;
         this.escRetrigUntil = this.elapsed + (Number.isFinite(this.escClimbRetrig) ? this.escClimbRetrig : 0.3);
+      } else if (this.escPick === "turn180") {
+        this.escUntil = this.elapsed + (Number.isFinite(this.escTurn180Hold) ? this.escTurn180Hold : 1.85);
+        this.escRetrigUntil = 0;
       } else {
         this.escUntil = this.elapsed + this.esc.duration_s;
         this.escRetrigUntil = 0;
@@ -670,13 +717,18 @@ export class Decoder {
     if (this.elapsed <= this.escUntil && this.escPick) {
       cmd.escape = true;
       if (this.escPick === "climb") {
-        // Climb AND keep going: only the vertical channel is taken over here, the wing command stays
-        // the cruise the brain asked for, so the drone gains height while still covering ground (this
-        // is what makes a head-on reflex a dodge instead of a 1.5 s stall in the air).
+        // No-cue fallback climb: only the vertical channel is taken over, the wing command stays
+        // the cruise the brain asked for, so the drone gains height while still covering ground.
         cmd.throttle = this.esc.strength;
         // A ceiling is still a ceiling: once the climb has reached the escape ceiling it stops gaining
         // height (the altitude governor would otherwise have to undo ~1 m after every head-on loom).
         if (this.escCeilAlt !== null && tel && tel.alt > this.escCeilAlt) cmd.throttle = 0;
+      } else if (this.escPick === "turn180") {
+        // 180° about-face: full yaw in the chosen direction, zero forward / throttle. The drone
+        // pivots on the spot for escTurn180Hold seconds (≈ π / yrMax + tau), then the escape
+        // releases and the cruise resumes — now pointing the other way.
+        cmd.forward = 0; cmd.throttle = 0; cmd.yaw = 0;
+        cmd.yaw = this.escTurn180Dir * this.esc.strength;
       } else {
         cmd.forward = 0; cmd.throttle = 0; cmd.yaw = 0;
         cmd.yaw = this.escPick === "left" ? -this.esc.strength : this.esc.strength;

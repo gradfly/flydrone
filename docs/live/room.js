@@ -146,7 +146,7 @@ export function createRoom(scene, boxes = []) {
       for (let i = 0; i < dustN; i++) {
         for (let k = 0; k < 3; k++) {
           dustPos[i * 3 + k] += dustVel[i * 3 + k] * dt;
-          const lim = k === 1 ? [0, H] : [-SX * 0.45, SX * 0.45];
+          const lim = k === 1 ? [0, H] : [-SX * 0.8, SX * 0.8];
           if (dustPos[i * 3 + k] < lim[0]) dustPos[i * 3 + k] = lim[1];
           if (dustPos[i * 3 + k] > lim[1]) dustPos[i * 3 + k] = lim[0];
         }

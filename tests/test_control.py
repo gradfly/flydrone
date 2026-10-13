@@ -37,6 +37,20 @@ def test_escape_reflex():
     assert (c.throttle == 0) or (c.yaw == 0)  # not both axes at once
 
 
+def test_cruise_drive_brakes_on_looming():
+    """Autoplay: the decoder holds a constant forward drive that looming DNs brake."""
+    cfg = load_config()
+    cfg["decoder"]["cruise"] = 0.4
+    cfg["decoder"]["smoothing"] = 1.0
+    dec = MotorDecoder(cfg)
+    rest = {"DNg02_L": 35, "DNg02_R": 35, "DNp03_L": 0, "DNp03_R": 0, "DNp01_L": 0, "DNp01_R": 0}
+    for _ in range(40):
+        dec.update(rest, 0.05)  # settle and measure resting baselines
+    assert abs(dec.update(rest, 0.05).forward - 0.4) < 0.02  # cruise is always on
+    c = dec.update({**rest, "DNp03_L": 60, "DNp03_R": 60}, 0.05)
+    assert c.forward < 0.1  # looming DNs brake the cruise to a stop
+
+
 def test_readout_file(tmp_path):
     p = tmp_path / "r.json"
     p.write_text(json.dumps({"baseline": {"A": 10}, "axes": {"throttle": {"gain": 1.0, "terms": {"A": 0.1}}}}))

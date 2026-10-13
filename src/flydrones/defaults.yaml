@@ -68,9 +68,38 @@ vision:
   height: 72
   grid: [6, 8]             # rows, cols of the ommatidia grid per eye
   flow_gain: 1.2           # pixels/frame that saturate a motion channel
-  loom_gain: 8.0           # (expansion - loom_floor) * gain -> 0..1
-  loom_floor: 0.04
+  loom_gain: 10.0          # (expansion - loom_floor) * gain -> 0..1
+  loom_floor: 0.15
+  # Fraction of the field width the looming *trigger* reads (1.0 = full width, 0.3 = central
+  # 30 %). Peripheral flow (walls sliding past during cruise) inflates the full-width
+  # expansion slope and fires the reflex too early; reading only the centre cuts those false
+  # triggers without affecting the escape direction, which still reads the full half-eye.
+  loom_fov_frac: 0.3
   blur: 1
+
+# ---------------------------------------------------------------------------
+# The eyes: a drone camera on a USB UVC capture device (--camera).
+# The frame is grabbed at this size and then resized to vision.width/height.
+# ---------------------------------------------------------------------------
+camera:
+  index: "0"               # device index or DirectShow name, e.g. "USB Video"
+  width: 640
+  height: 480
+  fps: 30
+  mjpg: true               # MJPG keeps 640x480 USB traffic low enough to be real time
+  mirror: false            # a camera pointed forward must not be mirrored
+  backend: dshow           # dshow (Windows) / v4l2 (Linux) / msmf / gstreamer / auto
+  buffer_size: 1           # drain the driver queue: stale frames are worse than dropped ones
+
+# ---------------------------------------------------------------------------
+# USB serial link to the flight controller: AA THR YAW FWD at control.hz
+# ---------------------------------------------------------------------------
+serial:
+  port: COM3               # Windows: COM5 ...   Linux/macOS: /dev/ttyUSB0
+  baud: 115200
+  scale: 120               # sticks are sent as -120..120 signed bytes
+  arm_after_s: 0.0         # >0: send neutral frames this long before arming
+  telemetry: false         # read AA xx xx xx frames coming back from the FC
 
 # ---------------------------------------------------------------------------
 # Decoder: descending-neuron rates (Hz, minus resting baseline) -> command axes
@@ -78,16 +107,16 @@ vision:
 # ---------------------------------------------------------------------------
 decoder:
   window_ms: 50
-  smoothing: 0.2           # EMA factor per control tick (0 = frozen, 1 = raw)
+  smoothing: 0.25          # EMA factor per control tick (0 = frozen, 1 = raw)
   settle_s: 1.5            # measure resting baselines for this long at start
-  deadzone: 0.04
+  deadzone: 0.1
   readout_file: null       # JSON from `flydrones calibrate` overrides the terms below
   axes:
     throttle:              # vertical speed
       gain: 0.022
       terms: {DNg02_L: 0.5, DNg02_R: 0.5}
     yaw:                   # yaw rate, + = clockwise / right
-      gain: 0.05
+      gain: 0.3
       terms: {DNg02_R: 1.0, DNg02_L: -1.0, DNp03_L: 0.8, DNp03_R: -0.8}
     forward:
       gain: 0.0
@@ -96,14 +125,34 @@ decoder:
       gain: 0.0
       terms: {}
   cruise: 0.0              # constant forward speed you choose; looming DNs brake it
+  # brake_terms: how hard each looming neuron slows the cruise. Their weighted sum can
+  # exceed 1, which is why escape.cruise_floor exists (a fly slows down, never stops dead).
   brake_terms: {DNp03_L: 0.02, DNp03_R: 0.02, DNp01_L: 0.03, DNp01_R: 0.03}
   escape:
     terms: [DNp01_L, DNp01_R]
     threshold_hz: 20
-    # On trigger the fly randomly picks one of: climb / left / right.
-    # The picked maneuver is held for duration_s.
+    # Speed-adaptive threshold: the looming signal ~ V / Z, so the threshold above is scaled
+    # by clamp(speed / v_ref, 0.3, 3.0) to keep the trigger distance roughly constant.
+    # v_ref ~ the cruise speed you fly at.
+    v_ref: 0.8
+    # The direction is READ OFF THE EYE, not rolled: the half of the retina that is
+    # swelling harder decides and the fly turns away from it (motor/escape.py). Both
+    # halves alike = head-on, which is now a 180 deg about-face rather than a climb.
     duration_s: 0.7
     strength: 0.8
+    # 180 deg about-face on a head-on loom: full yaw for turn180_hold_s (~ pi / yrMax + tau).
+    # Empty means "derive the hold from yaw_rate_dps"; set it to pin an explicit number.
+    turn180_hold_s: null
+    yaw_rate_dps: 120      # the airframe's max yaw rate, used to derive turn180_hold_s
+    climb_hold_s: 1.2      # a no-cue fallback climb keeps flying forward this long
+    climb_retrig_s: 0.3    # shortest gap between two picks inside one climb
+    side_min: 0.01         # static image (a bump) = no cue -> random fallback
+    side_close_frac: 0.10  # "both halves alike" band, relative to total depth-rate
+    # The no-cue random fallback mix (a bump, or a dead camera), NOT the visual reflex.
+    pick_p: {climb: 0.10, left: 0.45}
+    contact_s: 0.9         # a bump is a second trigger; ignore the next one this long
+    cruise_floor: 0.0      # 0 = the looming brake may stop the cruise (chair/game keep this)
+    ceil_alt: null         # stop gaining height in a fallback climb above this altitude
 
 # ---------------------------------------------------------------------------
 # Safety governor. It always has the last word over the brain.

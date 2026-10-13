@@ -920,15 +920,16 @@
       "height": 72,
       "grid": [6, 8],
       "flow_gain": 0.8,
-      "loom_gain": 15.0,
-      "loom_floor": 0.12,
+      "loom_gain": 10.0,
+      "loom_floor": 0.15,
+      "loom_fov_frac": 1.0,
       "blur": 1
     },
     "decoder": {
       "window_ms": 50,
-      "smoothing": 0.2,
+      "smoothing": 0.25,
       "settle_s": 1.5,
-      "deadzone": 0.04,
+      "deadzone": 0.1,
       "readout_file": null,
       "axes": {
         "throttle": {
@@ -936,7 +937,7 @@
           "terms": { "DNg02_L": 0.5, "DNg02_R": 0.5 }
         },
         "yaw": {
-          "gain": 0.4,
+          "gain": 0.3,
           "terms": {
             "DNg02_R": 1.0,
             "DNg02_L": -1.0,
@@ -956,7 +957,8 @@
       },
       "escape": {
         "terms": ["DNp01_L", "DNp01_R"],
-        "threshold_hz": 10,
+        "threshold_hz": 20,
+        "v_ref": 0.8,
         "mode": "climb",
         "duration_s": 0.6,
         "strength": 1.0,

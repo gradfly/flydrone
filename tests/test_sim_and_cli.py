@@ -1,6 +1,8 @@
+import pytest
+
 from flydrones.brain import Brain, build_minifly
 from flydrones.calibrate import fit_readout, record_responses
-from flydrones.cli import main
+from flydrones.cli import main, resolve_input
 from flydrones.config import load_config
 from flydrones.drones import SimDrone
 from flydrones.runtime import Pilot, run_sim
@@ -37,3 +39,21 @@ def test_cli_demo_and_bench(tmp_path, capsys):
 
 def test_cli_fly_sim_dry(capsys):
     assert main(["fly", "--drone", "sim", "--input", "camera", "--seconds", "3"]) == 0
+
+
+def test_serial_defaults_to_autoplay():
+    assert resolve_input("serial", None) == "autoplay"
+    assert resolve_input("tello", None) == "both"
+    assert resolve_input("sim", None) == "both"
+    assert resolve_input("serial", "gesture") == "gesture"  # explicit choice wins
+
+
+def test_cli_fly_sim_autoplay(capsys):
+    assert main(["fly", "--drone", "sim", "--input", "autoplay", "--seconds", "3"]) == 0
+    assert "AUTOPLAY" in capsys.readouterr().out
+
+
+def test_cli_fly_serial_without_camera_refuses():
+    # autoplay is the serial default and needs eyes: refuse before touching the port
+    with pytest.raises(SystemExit):
+        main(["fly", "--drone", "serial", "--seconds", "1"])
