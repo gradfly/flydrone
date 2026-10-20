@@ -1,5 +1,8 @@
 # FlyDrone live demo — long-term project notes
 
+- **★★ 2026-10-21 起：本 worktree 内所有 git 命令被安全中心拦截**（`read D:\OneDrive\project\飞控\果蝇神经网络模型\flydrone\.git\worktrees\flydrone-92bfcc05\HEAD (rule: ...)`）。因为 worktree 的 git 元数据住在父仓库的 OneDrive 路径下，而该路径当前被 Security Center 列为禁止读取 —— `git status/log/push` 全部返回 `fatal: not a git repository: (NULL)`。**别反复重试**，那是同一条规则的等价操作。解决办法只有：①让用户在安全中心给该父路径放行，②让用户在自己的终端里手动跑 git（`cd` 到该 OneDrive 主仓库或 worktree 目录），③只读需求改用 GitHub connector（`mcp__github__list_commits` 等，实测可用，能查 gradfly/flydrone 的远程 HEAD）。
+- **推送/远程约定（2026-10-13 确立）**：改动的验证与调试痕迹不要入库。`camera_probe*.png`、`camera_test_log.json`、`.workbuddy/` 下的一次性截图（arena*/alarm*/live_tuned）都已删，`.gitignore` 加了 `.git-backup-cleanup/`。推送到自己的 fork 用 `git push flydrone workbuddy/flydrone-92bfcc05:flydrone`（`flydrone` = https://github.com/gradfly/flydrone，`origin` 仍指上游 SpikeCalls/FlyDrones）。
+- **★ 本仓库是 git worktree**（`.git` 是指向 `D:/OneDrive/project/飞控/果蝇神经网络模型/flydrone/.git/worktrees/flydrone-92bfcc05` 的文件）。主工作区和这个 worktree 共享 `.git`、**不共享工作区状态**，所以主工作区里 `docs/live/*.js` 也会各自显示 modified，别混淆。清理有风险的操作要 git rm --cached 而不是直接删跟踪文件。
 - 版本戳纪律：改任何 `docs/live/*.js` 都要同步 bump 三处 —— `docs/index.html` 的 `app.js?v=N`、`app.js` 顶部 `BUILD`、以及 app.js 内部对 engine/models/room 的 `?v=N` import。否则浏览器缓存旧文件，用户会看到旧行为（已发生过两次误报）。
 - 用户验证偏好：改完代码**不要**创建 .mjs 验证脚本，用户自己在浏览器验证；需要数据时用 `node --input-type=module -e '...'` 内联跑 engine.js（可直接 Node import；改 `ROOM.boxes = makeObstacles(seed)` 可换布局）。复用现成的 `.workbuddy/hl_verify.mjs` 无头 harness 也算合规。
 - autoplay 专属参数集中在 `app.js` 的 `AUTO_TUNE`（cruise/maxForward/loomGain/loomFloor/yawRateDps/yawGain/escPickP/altHold），用户会自己改这些数值；chair run / swat game 不受影响。
