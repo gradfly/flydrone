@@ -109,6 +109,28 @@ flydrones inspect                     # poke every input group, watch the motor 
 
 No camera, drone or GPU needed for any of the above.
 
+### Replay the same observations through another brain
+
+```bash
+flydrones demo --seconds 22 --sensory-trace senses.jsonl.gz --log flight.csv
+flydrones replay senses.jsonl.gz --log replay.csv
+flydrones replay senses.jsonl.gz --brain other_connectome.npz --log other.csv
+```
+
+Compare the `hz_*` columns by timestamp. The first replay uses the recorded
+MiniFly settings and seed. The second feeds the same observations to your
+chosen connectome using the recorded input and output group definitions.
+To reproduce a run originally recorded with an external connectome, pass
+the same brain file explicitly.
+
+The compressed JSON-lines file starts with a versioned header containing
+the brain and encoder settings. Each tick stores its start time and duration
+in seconds, yaw rate in degrees per second, and the per-eye feature grids
+after gestures have been applied. Negative timestamps mark warm-up. Replay
+advances the brain through those ticks and exports firing rates in Hz for
+flight ticks. The observations stay fixed throughout the comparison. To
+measure how a different brain changes the flight path, run a new closed-loop demo.
+
 ## How it works
 
 <p align="center"><img src="assets/architecture.svg" alt="Architecture diagram" width="100%"></p>
