@@ -11,6 +11,7 @@ from .brain import Brain
 from .drones.base import Drone
 from .drones.sim import SimDrone
 from .motor import FlightCommand, MotorDecoder
+from .motor.command import AXES
 from .motor.escape import NearCue
 from .safety import SafetyGovernor, Telemetry
 from .senses import GestureIllusion, InputEncoder, Retina
@@ -104,7 +105,7 @@ class Pilot:
             self.drone.land()
         else:
             self.drone.send(cmd)
-        self.history.append({"t": t, "alt": tel.alt_m, "x": tel.x_m, "y": tel.y_m, "yaw": tel.yaw_deg, **{f"cmd_{k}": getattr(cmd, k) for k in ("throttle", "yaw", "forward")},
+        self.history.append({"t": t, "alt": tel.alt_m, "x": tel.x_m, "y": tel.y_m, "yaw": tel.yaw_deg, **{f"cmd_{k}": getattr(cmd, k) for k in AXES},
                              "escape": cmd.escape, **{f"hz_{k}": v for k, v in rates.items() if k.startswith("DN")}})
         return TickInfo(t, cam if cam is not None else frame, rates, raw, cmd, tel, g, self.illusion.mode if g is not None else "camera",
                         self.brain.last_raster, self.brain.realtime_factor, int(self.brain.last_counts.sum()),

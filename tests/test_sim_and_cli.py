@@ -1,3 +1,5 @@
+import csv
+
 import pytest
 
 from flydrones.brain import Brain, build_minifly
@@ -34,7 +36,11 @@ def test_calibration_recovers_signs():
 def test_cli_demo_and_bench(tmp_path, capsys):
     assert main(["bench", "--ms", "200"]) == 0
     assert main(["demo", "--seconds", "3", "--log", str(tmp_path / "log.csv")]) == 0
-    assert (tmp_path / "log.csv").exists()
+    with (tmp_path / "log.csv").open(newline="") as stream:
+        row = next(csv.DictReader(stream))
+    assert {key for key in row if key.startswith("cmd_")} == {
+        "cmd_throttle", "cmd_yaw", "cmd_forward", "cmd_lateral",
+    }
 
 
 def test_cli_fly_sim_dry(capsys):
