@@ -57,6 +57,7 @@ class Pilot:
         self.safety = SafetyGovernor(cfg)
         self.illusion = GestureIllusion()
         self.history: list[dict] = []
+        self.observe_senses = None
         self._t0 = None
 
     def _frame(self):
@@ -64,6 +65,12 @@ class Pilot:
         if self.camera is not None:
             return self.camera.capture()
         return self.drone.frame() if self.drone.has_camera else None
+
+    def _brain_tick(self, t, dt, vision, yaw_rate):
+        if self.observe_senses is not None:
+            self.observe_senses(t, dt, vision, yaw_rate)
+        inputs = self.encoder.encode(vision, yaw_rate)
+        return self.brain.tick(inputs, ms=dt * 1000.0)
 
     def warmup(self, seconds: float, dt: float = 0.05) -> None:
         """Let the brain settle on the ground (still scene) and measure resting rates."""
@@ -73,8 +80,7 @@ class Pilot:
         while t < 0:
             frame = self._frame()
             vision = self.retina.encode(frame)
-            inputs = self.encoder.encode(vision, 0.0)
-            rates = self.brain.tick(inputs, ms=dt * 1000.0)
+            rates = self._brain_tick(t, dt, vision, 0.0)
             self.decoder.update(rates, dt)
             t += dt
         self.drone.send(_FC.hover("warmup done"))
@@ -88,8 +94,7 @@ class Pilot:
             g = self.gestures.read(t, cam)
             vision = self.illusion.apply(vision, g, t)
         tel = self.drone.telemetry()
-        inputs = self.encoder.encode(vision, tel.yaw_rate_dps)
-        rates = self.brain.tick(inputs, ms=dt * 1000.0)
+        rates = self._brain_tick(t, dt, vision, tel.yaw_rate_dps)
         flow = self.near.update(vision)  # per-half depth rate, read by the escape picker
         raw = self.decoder.update(rates, dt, tel=tel, flow=flow)
         cmd = self.safety.filter(raw, tel, dt)

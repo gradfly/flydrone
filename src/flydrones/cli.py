@@ -6,6 +6,8 @@ import argparse
 import copy
 import csv
 import sys
+from contextlib import nullcontext
+from pathlib import Path
 
 import numpy as np
 
@@ -58,12 +60,15 @@ _record_or_show.window = None
 # ---------------------------------------------------------------- commands
 def cmd_demo(args) -> int:
     from .drones import SimDrone
+    from .replay import record_senses
     from .runtime import Pilot, run_sim
     from .senses import ScriptedGestures, demo_timeline
     from .viz import Dashboard, LiveWindow, save_gif
 
     print(BANNER)
     cfg = _cfg(args)
+    if args.sensory_trace and cfg["brain"].get("seed", 0) is None:
+        cfg["brain"]["seed"] = np.random.SeedSequence().entropy
     brain = _brain(cfg)
     pilot = Pilot(brain, SimDrone(start=(-1.5, 0.0, 0.0)), cfg, gestures=ScriptedGestures(demo_timeline()))
     dash = Dashboard(brain, [pilot], title="FlyDrones · hand -> fly eyes -> fly brain -> drone")
@@ -80,16 +85,37 @@ def cmd_demo(args) -> int:
             last_label[0] = label
         _record_or_show(dash, frames, infos, args, k)
 
+    if args.sensory_trace and any(
+        path and Path(path).resolve() == Path(args.sensory_trace).resolve() for path in (args.log, args.record)
+    ):
+        raise SystemExit("Choose separate paths for the sensory trace, flight log and GIF")
+    recording = record_senses(args.sensory_trace, cfg) if args.sensory_trace else nullcontext()
     try:
-        run_sim([pilot], args.seconds, hz=cfg["control"]["hz"], on_tick=on_tick)
+        with recording as pilot.observe_senses:
+            run_sim([pilot], args.seconds, hz=cfg["control"]["hz"], on_tick=on_tick)
     except KeyboardInterrupt:
-        pass
+        if args.sensory_trace:
+            print("Recording interrupted before completion.", file=sys.stderr)
+            return 130
     print(f"collisions: {pilot.drone.collisions}")
     if args.record and frames:
         save_gif(frames, args.record, fps=int(cfg["control"]["hz"] / max(1, args.every)))
         print(f"saved {len(frames)} frames -> {args.record}")
     if args.log:
         _write_log(args.log, pilot.history)
+    return 0
+
+
+def cmd_replay(args) -> int:
+    from .replay import replay_rates
+
+    if Path(args.trace).resolve() == Path(args.log).resolve():
+        raise SystemExit("Choose a CSV output path different from the sensory trace")
+    rows = list(replay_rates(args.trace, args.brain))
+    if not rows:
+        raise SystemExit("The sensory trace contains no flight ticks")
+    _write_log(args.log, rows)
+    print(f"replayed {len(rows)} flight ticks")
     return 0
 
 
@@ -393,7 +419,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--every", type=int, default=2, help="record every Nth control tick")
     sp.add_argument("--live", action="store_true", help="show the dashboard in a window (needs OpenCV)")
     sp.add_argument("--log", help="write a CSV flight log")
+    sp.add_argument("--sensory-trace", help="save a compressed sensory trace including warm-up")
     sp.set_defaults(func=cmd_demo)
+
+    sp = sub.add_parser("replay", help="recompute neural rates offline from a demo sensory trace")
+    sp.add_argument("trace", help="sensory trace from demo --sensory-trace")
+    sp.add_argument("--brain", help="minifly or a local connectome .npz (required for external models)")
+    sp.add_argument("--log", required=True, help="output CSV with time and neural output rates")
+    sp.set_defaults(func=cmd_replay)
 
     sp = sub.add_parser("swarm", help="one connectome, several drone pilots (simulated)")
     common(sp)
