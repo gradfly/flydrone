@@ -148,6 +148,7 @@ class EscapePicker:
         self.esc_pick: str | None = None
         self.esc_retrig_until = 0.0
         self.esc_eye: str | None = None
+        self.direction_source = "none"
         self.esc_retrig = 0
         self.nocue = 0
         self.turn180_dir = 1  # yaw sign of the running about-face (+1 = right, -1 = left)
@@ -249,6 +250,7 @@ class EscapePicker:
         """Commit to a maneuver for this escape and arm its hold window."""
         self.esc_eye = eye
         if eye:
+            self.direction_source = "optic_flow"
             # The reflex is a lookup, not a lottery. A head-on read ("turn180") has no side to
             # pick, so the drone turns around; the margin of side_ema (small but real) decides
             # which way, and only a truly zero side falls back to a coin.
@@ -257,8 +259,10 @@ class EscapePicker:
                 if abs(self.side_ema) > 1e-6:
                     self.turn180_dir = 1 if self.side_ema >= 0 else -1
                 else:
+                    self.direction_source = "random_tie"
                     self.turn180_dir = -1 if random.random() < 0.5 else 1
         else:
+            self.direction_source = "random_fallback"
             self.nocue += 1  # blind escape: contact bump / dead vision
             r = random.random()
             self.esc_retrig += 1 if retrigger else 0

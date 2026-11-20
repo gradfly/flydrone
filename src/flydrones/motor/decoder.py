@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+from typing import NamedTuple
 
 from .command import AXES, FlightCommand
 from .escape import EscapePicker
@@ -23,6 +24,22 @@ from .escape import EscapePicker
 # two axes below only affect escapes with no visual cue at all (a bump against something,
 # or a dead camera), where the fly falls back to a random maneuver.
 ESCAPE_CHOICES = ("climb", "left", "right")
+
+
+class EscapeEvent(NamedTuple):
+    """Decoder decision on a trigger tick, before the governor filters the command."""
+
+    cause: str
+    cue: str
+    maneuver: str
+    direction_source: str
+    turn180_sign: int | None
+    gf_hz: float
+    threshold_hz: float
+    retrigger: bool
+
+
+_EMPTY_ESCAPE_FIELDS = dict.fromkeys(f"escape_{key}" for key in EscapeEvent._fields)
 
 
 class MotorDecoder:
@@ -77,6 +94,7 @@ class MotorDecoder:
         if d.get("readout_file"):
             self.load_readout(d["readout_file"])
         self.last_escape_t = None
+        self.escape_event: EscapeEvent | None = None
         self.esc_cause: str | None = None  # "loom" | "contact"
 
     # ------------------------------------------------------------------ held state
@@ -109,6 +127,7 @@ class MotorDecoder:
         is still triggered, but its direction comes from the random fallback instead of
         from the eye, and contact escapes cannot fire.
         """
+        self.escape_event = None
         self._elapsed += dt
         self.picker._elapsed = self._elapsed
         if not self.settled:
@@ -159,7 +178,13 @@ class MotorDecoder:
                 if contact_ready:
                     self._contact_until = self._elapsed + self.contact_cooldown
                 self.esc_cause = "contact" if contact_ready else "loom"
-                self.picker.trigger(eye, above_ceil=above_ceil, retrigger=retrigger)
+                pick = self.picker.trigger(eye, above_ceil=above_ceil, retrigger=retrigger)
+                self.escape_event = EscapeEvent(
+                    cause=self.esc_cause, cue=eye or "none", maneuver=pick,
+                    direction_source=self.picker.direction_source,
+                    turn180_sign=self.picker.turn180_dir if pick == "turn180" else None,
+                    gf_hz=self._gf, threshold_hz=threshold_eff, retrigger=retrigger,
+                )
                 self.last_escape_t = self._elapsed
 
         if self.picker.pending():
@@ -173,3 +198,10 @@ class MotorDecoder:
             return False
         alt = getattr(tel, "alt_m", None)
         return alt is not None and alt > self.esc_ceil_alt
+
+    def add_escape_log_fields(self, row: dict) -> None:
+        """Append the decision to a flight-log row, or leave the event columns empty."""
+        if self.escape_event is None:
+            row.update(_EMPTY_ESCAPE_FIELDS)
+        else:
+            row.update(zip(_EMPTY_ESCAPE_FIELDS, self.escape_event, strict=True))
