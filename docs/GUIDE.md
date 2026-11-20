@@ -118,6 +118,26 @@ flydrones bench --brain data/malecns_core3.npz
 
 Details: [CONNECTOME_DATA.md](CONNECTOME_DATA.md).
 
+### Read an escape decision from a Python flight log
+
+Run `flydrones demo --seconds 14 --log flight.csv` and find the rows with a
+nonempty `escape_cause`. Each such row marks a decoder decision at flight time
+`t` (seconds). During a held maneuver, `escape` can stay true across several
+ticks while the event columns remain empty. Python's `fly --log` uses the same
+columns. The decision is recorded before the safety governor filters the command.
+
+| CSV field | Meaning on a decision tick |
+| --- | --- |
+| `escape_cause` | `loom` when the smoothed giant-fiber rate meets the threshold, or `contact` when the contact trigger is ready. Contact takes priority when both apply. |
+| `escape_gf_hz`, `escape_threshold_hz` | Smoothed giant-fiber rate and the effective speed-adjusted threshold used on this tick, both in Hz. Contact can trigger below threshold. |
+| `escape_cue` | Maneuver suggested by optic flow: `left`, `right`, `turn180`, or `none`. A side indicates the suggested turn direction. |
+| `escape_direction_source` | `optic_flow` for a direction chosen from flow, `random_fallback` for a choice without a usable cue, or `random_tie` when a head-on cue calls for a turn but its side must be drawn. |
+| `escape_maneuver`, `escape_turn180_sign` | Selected maneuver. For a 180-degree turn the sign is −1 for left yaw and +1 for right yaw. Other maneuvers leave the sign empty. |
+| `escape_retrigger` | True when a new decision interrupts a held climb. |
+
+For example, a row with `loom`, `none`, `random_fallback`, and `right` means
+the neural signal triggered escape and the fallback selected a right turn.
+
 ## 5. Calibrate the read-out
 
 The real connectome does not come with labels like "this neuron means climb". Calibration shows the brain
